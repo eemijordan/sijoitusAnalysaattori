@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from core import tietokanta
@@ -92,3 +94,45 @@ def test_muuta_kateista_estaa_negatiivisen_saldon(db_polku):
         tietokanta.muuta_kateista(-(ALKUPAAOMA + 1), db_polku)
 
     assert tietokanta.hae_kateinen(db_polku) == ALKUPAAOMA
+
+
+def _lisaa_positio(yhteys, symboli, tila, osto_ajo_id="ajo1"):
+    yhteys.execute(
+        """
+        INSERT INTO positions (
+            symboli, tila, ostohinta, maara, panos_usd, ostopvm, osto_ajo_id
+        ) VALUES (?, ?, 100, 10, 1000, '2026-01-01', ?)
+        """,
+        (symboli, tila, osto_ajo_id),
+    )
+
+
+def test_kahta_aktiivista_positiota_samalle_symbolille_ei_voi_lisata(db_polku):
+    tietokanta.alusta_tietokanta(db_polku)
+
+    yhteys = tietokanta.avaa_yhteys(db_polku)
+    try:
+        _lisaa_positio(yhteys, "AAPL", "aktiivinen")
+        yhteys.commit()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            _lisaa_positio(yhteys, "AAPL", "aktiivinen")
+            yhteys.commit()
+    finally:
+        yhteys.close()
+
+
+def test_symboli_voidaan_ostaa_uudelleen_edellisen_position_sulkeuduttua(db_polku):
+    tietokanta.alusta_tietokanta(db_polku)
+
+    yhteys = tietokanta.avaa_yhteys(db_polku)
+    try:
+        _lisaa_positio(yhteys, "AAPL", "suljettu")
+        yhteys.commit()
+
+        _lisaa_positio(yhteys, "AAPL", "aktiivinen")
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    assert tietokanta.onko_jo_aktiivinen("AAPL", db_polku) is True

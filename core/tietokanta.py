@@ -10,7 +10,7 @@ OLETUS_TIETOKANTA = DATA_DIR / "sijoitusanalysaattori.db"
 
 SKEEMA = """
 CREATE TABLE IF NOT EXISTS portfolio (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY CHECK (id = 1),
     alkupaaoma REAL NOT NULL,
     kateinen REAL NOT NULL,
     valuutta TEXT NOT NULL DEFAULT 'USD',
@@ -70,6 +70,9 @@ CREATE TABLE IF NOT EXISTS positions (
     voitto_tappio_pct REAL,
     viimeisin_tarkistus TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_aktiivinen_symboli
+ON positions(symboli) WHERE tila = 'aktiivinen';
 """
 
 
@@ -88,8 +91,8 @@ def alusta_tietokanta(polku=OLETUS_TIETOKANTA):
         rivimaara = yhteys.execute("SELECT COUNT(*) FROM portfolio").fetchone()[0]
         if rivimaara == 0:
             yhteys.execute(
-                "INSERT INTO portfolio (alkupaaoma, kateinen, valuutta, paivitetty) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO portfolio (id, alkupaaoma, kateinen, valuutta, paivitetty) "
+                "VALUES (1, ?, ?, ?, ?)",
                 (ALKUPAAOMA, ALKUPAAOMA, "USD", datetime.now().isoformat(timespec="seconds")),
             )
         yhteys.commit()
@@ -105,7 +108,7 @@ def hae_kateinen(polku=OLETUS_TIETOKANTA) -> float:
     yhteys = avaa_yhteys(polku)
     try:
         rivi = yhteys.execute(
-            "SELECT kateinen FROM portfolio ORDER BY id DESC LIMIT 1"
+            "SELECT kateinen FROM portfolio WHERE id = 1"
         ).fetchone()
         if rivi is None:
             raise RuntimeError("portfolio-taulu on tyhja - aja alusta_tietokanta() ensin")
@@ -118,7 +121,7 @@ def muuta_kateista(delta: float, polku=OLETUS_TIETOKANTA) -> float:
     yhteys = avaa_yhteys(polku)
     try:
         rivi = yhteys.execute(
-            "SELECT id, kateinen FROM portfolio ORDER BY id DESC LIMIT 1"
+            "SELECT kateinen FROM portfolio WHERE id = 1"
         ).fetchone()
         if rivi is None:
             raise RuntimeError("portfolio-taulu on tyhja - aja alusta_tietokanta() ensin")
@@ -130,8 +133,8 @@ def muuta_kateista(delta: float, polku=OLETUS_TIETOKANTA) -> float:
             )
 
         yhteys.execute(
-            "UPDATE portfolio SET kateinen = ?, paivitetty = ? WHERE id = ?",
-            (uusi_saldo, datetime.now().isoformat(timespec="seconds"), rivi["id"]),
+            "UPDATE portfolio SET kateinen = ?, paivitetty = ? WHERE id = 1",
+            (uusi_saldo, datetime.now().isoformat(timespec="seconds")),
         )
         yhteys.commit()
         return uusi_saldo
