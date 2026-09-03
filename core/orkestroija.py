@@ -22,10 +22,7 @@ def run_normal(db_path=tietokanta.DEFAULT_DB_PATH) -> str:
 
     for name, module in _AGENTIT:
         try:
-            # HUOM: agentit ottavat toistaiseksi vastaan aja(ajo_id, ajotyyppi,
-            # polku=...) - nimet vaihtuvat run(run_id, run_type, db_path=...)
-            # -muotoon askeleessa 3, jolloin tama kutsu paivitetaan samalla.
-            summary = module.aja(run_id, run_type, polku=db_path)
+            summary = module.run(run_id, run_type, db_path=db_path)
             _loki.info(f"{name}: {summary}")
         except Exception as error:
             _loki.error(f"{name} epaonnistui ajossa {run_id}: {error}")

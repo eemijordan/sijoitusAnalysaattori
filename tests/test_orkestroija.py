@@ -14,7 +14,7 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         trendinmetsastaja,
-        "hae_analyytikkomuutokset",
+        "fetch_analyst_changes",
         lambda: [
             {
                 "symbol": "AAPL",
@@ -28,7 +28,7 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         trendinmetsastaja,
-        "hae_kongressikaupat",
+        "fetch_congress_trades",
         lambda: [
             {
                 "symbol": "MSFT",
@@ -38,9 +38,9 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
             },
         ],
     )
-    monkeypatch.setattr(trendinmetsastaja, "hae_sisapiirikaupat", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "hae_tavoitehinnat", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "hae_us_symbolit", lambda: {"AAPL", "MSFT"})
+    monkeypatch.setattr(trendinmetsastaja, "fetch_insider_trades", lambda: [])
+    monkeypatch.setattr(trendinmetsastaja, "fetch_price_targets", lambda: [])
+    monkeypatch.setattr(trendinmetsastaja, "fetch_us_symbols", lambda: {"AAPL", "MSFT"})
 
     price_data = {
         "current_price": 150.0,

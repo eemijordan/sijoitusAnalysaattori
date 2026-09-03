@@ -23,43 +23,43 @@ FMP_BASE = "https://financialmodelingprep.com/stable"
 TWELVE_DATA_STOCKS_URL = "https://api.twelvedata.com/stocks"
 VALIMUISTI_DIR = tietokanta.DATA_DIR / "valimuisti"
 
-SIVUN_KOKO = 10
+PAGE_SIZE = 10
 # Talla FMP-tasolla vain page=0 on sallittu (katto on tilikohtainen, todettu
 # koettimella - page=1 -> 402 kaikilla kolmella paatepisteella). Jos taso
 # joskus paivittyy, riittaa kasvattaa tata lukua.
-SIVUJA_MAX = 1
+MAX_PAGES = 1
 
-SYMBOLI_REGEX = re.compile(r"^[A-Z]{1,5}$")
-HYVAKSYTYT_LUOKITUKSET = {"buy", "strong buy", "outperform", "overweight"}
-AMOUNT_NUMERO_REGEX = re.compile(r"[\d][\d,]*")
-MAKSIMI_IKA_ANALYYTIKKO_VRK = 14
-MIN_US_SYMBOLIMAARA = 1000
+SYMBOL_REGEX = re.compile(r"^[A-Z]{1,5}$")
+ACCEPTED_RATINGS = {"buy", "strong buy", "outperform", "overweight"}
+AMOUNT_NUMBER_REGEX = re.compile(r"[\d][\d,]*")
+MAX_ANALYST_AGE_DAYS = 14
+MIN_US_SYMBOL_COUNT = 1000
 
 # Twelve Datan /stocks-vastauksessa (country=United States) esiintyvat
 # exchange-arvot: NASDAQ, NYSE, CBOE, IEX, OTC, XSTU (viimeinen on itse
 # asiassa Stuttgartin porssi). Vain kaksi ensimmaista ovat US-paaporssit;
 # loput hylataan (OTC nimenomaisesti pyydetysti, muut alaporssit/ulkomaiset
 # samalla perusteella).
-HYVAKSYTYT_PORSSIT = {"NASDAQ", "NYSE"}
+ACCEPTED_EXCHANGES = {"NASDAQ", "NYSE"}
 
 # Koko maan /stocks-haku (country=United States, ei exchange-suodatinta)
 # palauttaa yli 20 000 riviaa ja on megatavuja - eri suuruusluokkaa kuin
 # FMP-haut, joten sille tarvitaan oma, pidempi timeout.
-SYMBOLILISTA_TIMEOUT = 60
+SYMBOL_LIST_TIMEOUT = 60
 # Porssien symbolilista ei muutu paivittain (uusia listautumisia muutama
 # viikossa), joten sille riittaa 30 vrk:n valimuisti - raskas haku tehdaan
 # noin kerran kuukaudessa eika joka kylmalla ajolla.
-SYMBOLILISTA_VALIMUISTI_VRK = 30
-SYMBOLILISTA_TIEDOSTONIMI = "twelvedata-stocks"
+SYMBOL_LIST_CACHE_DAYS = 30
+SYMBOL_LIST_FILENAME = "twelvedata-stocks"
 # Jos yhden porssin exchange-suodatettu vastaus on nain iso, exchange-
 # parametri on todennakoisesti jaanyt FMP:n/Twelve Datan paassa huomiotta
 # (koko maan vastaus on ~20 000 riviaa, yksittaisen paaporssin pitaisi olla
 # muutama tuhat).
-EPAILYTTAVAN_SUURI_PORSSIVASTAUS = 10000
+SUSPICIOUSLY_LARGE_EXCHANGE_RESPONSE = 10000
 
 # Karkea jarjestysasteikko "korotus vs. laskenus" -paattelyyn silloin kun
 # grades-latest-news-rivilta puuttuu oma action-kentta.
-LUOKKA_JARJESTYS = {
+RATING_ORDER = {
     "strong sell": 0,
     "sell": 1,
     "underweight": 1,
@@ -78,49 +78,49 @@ LUOKKA_JARJESTYS = {
 }
 
 
-def _hae_json_valimuistilla(nimi: str, url: str, params: dict):
+def _fetch_json_cached(name: str, url: str, params: dict):
     VALIMUISTI_DIR.mkdir(parents=True, exist_ok=True)
-    tiedosto = VALIMUISTI_DIR / f"{nimi}_{date.today().isoformat()}.json"
+    file_path = VALIMUISTI_DIR / f"{name}_{date.today().isoformat()}.json"
 
-    if tiedosto.exists():
-        with open(tiedosto, encoding="utf-8") as tiedosto_kahva:
-            return json.load(tiedosto_kahva)
+    if file_path.exists():
+        with open(file_path, encoding="utf-8") as file_handle:
+            return json.load(file_handle)
 
-    vastaus = requests.get(url, params=params, timeout=TIMEOUT)
-    vastaus.raise_for_status()
-    data = vastaus.json()
+    response = requests.get(url, params=params, timeout=TIMEOUT)
+    response.raise_for_status()
+    data = response.json()
 
-    with open(tiedosto, "w", encoding="utf-8") as tiedosto_kahva:
-        json.dump(data, tiedosto_kahva)
+    with open(file_path, "w", encoding="utf-8") as file_handle:
+        json.dump(data, file_handle)
 
     return data
 
 
-def _hae_sivutettu(nimi: str, url: str, apikey: str) -> list[dict]:
-    kaikki: list[dict] = []
-    ensimmainen_sivu = None
+def _fetch_paginated(name: str, url: str, apikey: str) -> list[dict]:
+    all_rows: list[dict] = []
+    first_page = None
 
-    for sivu in range(SIVUJA_MAX):
+    for page in range(MAX_PAGES):
         try:
-            data = _hae_json_valimuistilla(
-                f"{nimi}_sivu{sivu}",
+            data = _fetch_json_cached(
+                f"{name}_sivu{page}",
                 url,
-                {"page": sivu, "limit": SIVUN_KOKO, "apikey": apikey},
+                {"page": page, "limit": PAGE_SIZE, "apikey": apikey},
             )
         except requests.RequestException:
-            if sivu == 0:
+            if page == 0:
                 raise
             _loki.warning(
-                f"{nimi}: sivu {sivu} epaonnistui, kaytetaan tahan mennessa saatuja "
-                f"{len(kaikki)} rivia"
+                f"{name}: sivu {page} epaonnistui, kaytetaan tahan mennessa saatuja "
+                f"{len(all_rows)} rivia"
             )
             break
 
         if not isinstance(data, list):
-            if sivu == 0:
-                raise RuntimeError(f"{nimi} palautti odottamattoman muodon: {data!r}")
+            if page == 0:
+                raise RuntimeError(f"{name} palautti odottamattoman muodon: {data!r}")
             _loki.warning(
-                f"{nimi}: sivu {sivu} palautti odottamattoman muodon, "
+                f"{name}: sivu {page} palautti odottamattoman muodon, "
                 f"lopetetaan sivutus"
             )
             break
@@ -128,117 +128,115 @@ def _hae_sivutettu(nimi: str, url: str, apikey: str) -> list[dict]:
         if not data:
             break
 
-        if sivu == 0:
-            ensimmainen_sivu = data
-        elif data == ensimmainen_sivu:
+        if page == 0:
+            first_page = data
+        elif data == first_page:
             _loki.warning(
-                f"{nimi}: sivu {sivu} palautti samat rivit kuin sivu 0 - API ei nayta "
+                f"{name}: sivu {page} palautti samat rivit kuin sivu 0 - API ei nayta "
                 f"tukevan sivutusta, lopetetaan"
             )
             break
 
-        kaikki.extend(data)
+        all_rows.extend(data)
 
-    _loki.info(f"{nimi}: haettu {len(kaikki)} rivia")
-    return kaikki
+    _loki.info(f"{name}: haettu {len(all_rows)} rivia")
+    return all_rows
 
 
-def hae_analyytikkomuutokset() -> list[dict]:
+def fetch_analyst_changes() -> list[dict]:
     apikey = get_fmp_key()
-    return _hae_sivutettu(
+    return _fetch_paginated(
         "grades-latest-news", f"{FMP_BASE}/grades-latest-news", apikey
     )
 
 
-def hae_kongressikaupat() -> list[dict]:
+def fetch_congress_trades() -> list[dict]:
     apikey = get_fmp_key()
-    senaatti = _hae_sivutettu("senate-latest", f"{FMP_BASE}/senate-latest", apikey)
-    edustajat = _hae_sivutettu("house-latest", f"{FMP_BASE}/house-latest", apikey)
-    return senaatti + edustajat
+    senate = _fetch_paginated("senate-latest", f"{FMP_BASE}/senate-latest", apikey)
+    house = _fetch_paginated("house-latest", f"{FMP_BASE}/house-latest", apikey)
+    return senate + house
 
 
-def hae_sisapiirikaupat() -> list[dict]:
+def fetch_insider_trades() -> list[dict]:
     apikey = get_fmp_key()
-    return _hae_sivutettu(
+    return _fetch_paginated(
         "insider-trading-latest", f"{FMP_BASE}/insider-trading/latest", apikey
     )
 
 
-def hae_tavoitehinnat() -> list[dict]:
+def fetch_price_targets() -> list[dict]:
     apikey = get_fmp_key()
-    return _hae_sivutettu(
+    return _fetch_paginated(
         "price-target-latest-news", f"{FMP_BASE}/price-target-latest-news", apikey
     )
 
 
-def _valimuistin_symbolilistatiedostot() -> list[Path]:
+def _cached_symbol_list_files() -> list[Path]:
     if not VALIMUISTI_DIR.exists():
         return []
-    return sorted(
-        VALIMUISTI_DIR.glob(f"{SYMBOLILISTA_TIEDOSTONIMI}_*.json"), reverse=True
-    )
+    return sorted(VALIMUISTI_DIR.glob(f"{SYMBOL_LIST_FILENAME}_*.json"), reverse=True)
 
 
-def _hae_valimuistattu_symbolilista(max_ika_vrk: int) -> tuple[set[str], int] | None:
-    tanaan = date.today()
-    for tiedosto in _valimuistin_symbolilistatiedostot():
-        pvm_str = tiedosto.stem.removeprefix(f"{SYMBOLILISTA_TIEDOSTONIMI}_")
-        pvm = _jasenna_pvm(pvm_str)
-        if pvm is None:
+def _fetch_cached_symbol_list(max_age_days: int) -> tuple[set[str], int] | None:
+    today = date.today()
+    for file_path in _cached_symbol_list_files():
+        date_str = file_path.stem.removeprefix(f"{SYMBOL_LIST_FILENAME}_")
+        file_date = _parse_date(date_str)
+        if file_date is None:
             continue
 
-        ika = (tanaan - pvm).days
-        if ika > max_ika_vrk:
+        age = (today - file_date).days
+        if age > max_age_days:
             continue
 
         try:
-            with open(tiedosto, encoding="utf-8") as tiedosto_kahva:
-                symbolilista = json.load(tiedosto_kahva)
+            with open(file_path, encoding="utf-8") as file_handle:
+                symbol_list = json.load(file_handle)
         except (OSError, ValueError):
             continue
 
-        if not isinstance(symbolilista, list):
+        if not isinstance(symbol_list, list):
             continue
 
-        return set(symbolilista), ika
+        return set(symbol_list), age
 
     return None
 
 
-def _tallenna_symbolilista_valimuistiin(symbolit: set[str]) -> None:
+def _save_symbol_list_to_cache(symbols: set[str]) -> None:
     VALIMUISTI_DIR.mkdir(parents=True, exist_ok=True)
-    tiedosto = (
-        VALIMUISTI_DIR / f"{SYMBOLILISTA_TIEDOSTONIMI}_{date.today().isoformat()}.json"
+    file_path = (
+        VALIMUISTI_DIR / f"{SYMBOL_LIST_FILENAME}_{date.today().isoformat()}.json"
     )
-    with open(tiedosto, "w", encoding="utf-8") as tiedosto_kahva:
-        json.dump(sorted(symbolit), tiedosto_kahva)
+    with open(file_path, "w", encoding="utf-8") as file_handle:
+        json.dump(sorted(symbols), file_handle)
 
 
-def _hae_porssin_symbolit(porssi: str, apikey: str) -> list[dict]:
-    vastaus = requests.get(
+def _fetch_exchange_symbols(exchange: str, apikey: str) -> list[dict]:
+    response = requests.get(
         TWELVE_DATA_STOCKS_URL,
-        params={"country": "United States", "exchange": porssi, "apikey": apikey},
-        timeout=SYMBOLILISTA_TIMEOUT,
+        params={"country": "United States", "exchange": exchange, "apikey": apikey},
+        timeout=SYMBOL_LIST_TIMEOUT,
     )
-    vastaus.raise_for_status()
-    data = vastaus.json()
-    rivit = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(rivit, list):
+    response.raise_for_status()
+    data = response.json()
+    rows = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
         raise RuntimeError(
-            f"Twelve Data /stocks (exchange={porssi}) palautti odottamattoman "
+            f"Twelve Data /stocks (exchange={exchange}) palautti odottamattoman "
             f"muodon: {data!r}"
         )
-    return rivit
+    return rows
 
 
-def _hae_koko_maan_symbolit(apikey: str) -> list[dict]:
-    vastaus = requests.get(
+def _fetch_all_country_symbols(apikey: str) -> list[dict]:
+    response = requests.get(
         TWELVE_DATA_STOCKS_URL,
         params={"country": "United States", "apikey": apikey},
-        timeout=SYMBOLILISTA_TIMEOUT,
+        timeout=SYMBOL_LIST_TIMEOUT,
     )
-    vastaus.raise_for_status()
-    data = vastaus.json()
+    response.raise_for_status()
+    data = response.json()
     if not isinstance(data, dict) or not isinstance(data.get("data"), list):
         raise RuntimeError(
             f"Twelve Data /stocks palautti odottamattoman muodon: {data!r}"
@@ -246,589 +244,573 @@ def _hae_koko_maan_symbolit(apikey: str) -> list[dict]:
     return data["data"]
 
 
-def _hae_symbolilista_verkosta(apikey: str) -> set[str]:
-    porssikohtaiset: dict[str, list[dict]] = {}
-    parametri_toimii = True
+def _fetch_symbol_list_from_network(apikey: str) -> set[str]:
+    by_exchange: dict[str, list[dict]] = {}
+    param_works = True
 
-    for porssi in sorted(HYVAKSYTYT_PORSSIT):
-        rivit = _hae_porssin_symbolit(porssi, apikey)
-        if len(rivit) > EPAILYTTAVAN_SUURI_PORSSIVASTAUS:
+    for exchange in sorted(ACCEPTED_EXCHANGES):
+        rows = _fetch_exchange_symbols(exchange, apikey)
+        if len(rows) > SUSPICIOUSLY_LARGE_EXCHANGE_RESPONSE:
             _loki.warning(
-                f"Twelve Data /stocks?exchange={porssi} palautti {len(rivit)} rivia - "
+                f"Twelve Data /stocks?exchange={exchange} palautti {len(rows)} rivia - "
                 f"exchange-parametri nayttaa jaaneen huomiotta, palataan "
                 f"suodattamattomaan hakuun"
             )
-            parametri_toimii = False
+            param_works = False
             break
-        porssikohtaiset[porssi] = rivit
+        by_exchange[exchange] = rows
 
-    if parametri_toimii:
-        symbolit = {
-            str(rivi.get("symbol", "")).strip()
-            for rivit in porssikohtaiset.values()
-            for rivi in rivit
-            if isinstance(rivi, dict)
+    if param_works:
+        symbols = {
+            str(row.get("symbol", "")).strip()
+            for rows in by_exchange.values()
+            for row in rows
+            if isinstance(row, dict)
         }
-        symbolit.discard("")
-        return symbolit
+        symbols.discard("")
+        return symbols
 
-    kaikki_rivit = _hae_koko_maan_symbolit(apikey)
-    symbolit = {
-        str(rivi.get("symbol", "")).strip()
-        for rivi in kaikki_rivit
-        if isinstance(rivi, dict) and rivi.get("exchange") in HYVAKSYTYT_PORSSIT
+    all_rows = _fetch_all_country_symbols(apikey)
+    symbols = {
+        str(row.get("symbol", "")).strip()
+        for row in all_rows
+        if isinstance(row, dict) and row.get("exchange") in ACCEPTED_EXCHANGES
     }
-    symbolit.discard("")
-    return symbolit
+    symbols.discard("")
+    return symbols
 
 
-def hae_us_symbolit() -> set[str]:
+def fetch_us_symbols() -> set[str]:
     apikey = get_twelve_data_key()
 
-    vara = _hae_valimuistattu_symbolilista(SYMBOLILISTA_VALIMUISTI_VRK)
-    if vara is not None:
-        symbolit, ika = vara
+    cached = _fetch_cached_symbol_list(SYMBOL_LIST_CACHE_DAYS)
+    if cached is not None:
+        symbols, age = cached
         _loki.info(
-            f"twelvedata-stocks: kaytetaan {ika} vrk vanhaa valimuistia, "
-            f"{len(symbolit)} symbolia"
+            f"twelvedata-stocks: kaytetaan {age} vrk vanhaa valimuistia, "
+            f"{len(symbols)} symbolia"
         )
-        return symbolit
+        return symbols
 
     try:
-        symbolit = _hae_symbolilista_verkosta(apikey)
-    except Exception as virhe:
-        vara = _hae_valimuistattu_symbolilista(SYMBOLILISTA_VALIMUISTI_VRK)
-        if vara is not None:
-            symbolit, ika = vara
+        symbols = _fetch_symbol_list_from_network(apikey)
+    except Exception as error:
+        cached = _fetch_cached_symbol_list(SYMBOL_LIST_CACHE_DAYS)
+        if cached is not None:
+            symbols, age = cached
             _loki.warning(
-                f"Symbolilistan haku epaonnistui ({virhe}); kaytetaan {ika} vrk vanhaa "
-                f"valimuistia ({len(symbolit)} symbolia)"
+                f"Symbolilistan haku epaonnistui ({error}); kaytetaan {age} vrk "
+                f"vanhaa valimuistia ({len(symbols)} symbolia)"
             )
-            return symbolit
+            return symbols
         raise RuntimeError(
-            f"Symbolilistan haku epaonnistui eika kelvollista valimuistia ole: {virhe}"
-        ) from virhe
+            f"Symbolilistan haku epaonnistui eika kelvollista valimuistia ole: {error}"
+        ) from error
 
     # TODO tarkista myöhemmässä vaiheessa onko järkevä
 
-    if len(symbolit) < MIN_US_SYMBOLIMAARA:
+    if len(symbols) < MIN_US_SYMBOL_COUNT:
         raise RuntimeError(
             f"Twelve Data /stocks palautti epauskottavan pienen symbolijoukon "
-            f"({len(symbolit)} kpl) - parsinta on todennakoisesti rikki"
+            f"({len(symbols)} kpl) - parsinta on todennakoisesti rikki"
         )
     # TODO
 
-    _tallenna_symbolilista_valimuistiin(symbolit)
+    _save_symbol_list_to_cache(symbols)
     _loki.info(
-        f"twelvedata-stocks: haettu tuoreena, {len(symbolit)} hyvaksyttya US-symbolia"
+        f"twelvedata-stocks: haettu tuoreena, {len(symbols)} hyvaksyttya US-symbolia"
     )
-    return symbolit
+    return symbols
 
 
-def _kelvollinen_symboli(symboli) -> bool:
-    return isinstance(symboli, str) and bool(SYMBOLI_REGEX.match(symboli))
+def _is_valid_symbol(symbol) -> bool:
+    return isinstance(symbol, str) and bool(SYMBOL_REGEX.match(symbol))
 
 
-def _jasenna_iso_pvm(pvm_str):
-    if not isinstance(pvm_str, str) or not pvm_str:
+def _parse_iso_datetime(date_str):
+    if not isinstance(date_str, str) or not date_str:
         return None
     try:
-        aika = datetime.fromisoformat(pvm_str.replace("Z", "+00:00"))
+        moment = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
     except ValueError:
         return None
-    if aika.tzinfo is None:
-        aika = aika.replace(tzinfo=timezone.utc)
-    return aika
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
 
 
-def _jasenna_pvm(pvm_str):
-    if not isinstance(pvm_str, str) or not pvm_str:
+def _parse_date(date_str):
+    if not isinstance(date_str, str) or not date_str:
         return None
     try:
-        return date.fromisoformat(pvm_str[:10])
+        return date.fromisoformat(date_str[:10])
     except ValueError:
         return None
 
 
-def _amount_ylaraja(amount) -> float | None:
+def _amount_upper_bound(amount) -> float | None:
     if isinstance(amount, (int, float)):
         return float(amount)
     if not isinstance(amount, str):
         return None
 
-    luvut = AMOUNT_NUMERO_REGEX.findall(amount)
-    if not luvut:
+    numbers = AMOUNT_NUMBER_REGEX.findall(amount)
+    if not numbers:
         return None
     try:
-        arvot = [float(luku.replace(",", "")) for luku in luvut]
+        values = [float(number.replace(",", "")) for number in numbers]
     except ValueError:
         return None
-    return max(arvot) if arvot else None
+    return max(values) if values else None
 
 
-def _on_korotus_luokkavertailulla(uusi: str, edellinen: str) -> bool | None:
+def _is_upgrade_by_rating_comparison(
+    new_rating: str, previous_rating: str
+) -> bool | None:
     """ """
-    u = LUOKKA_JARJESTYS.get(uusi.strip().lower())
-    e = LUOKKA_JARJESTYS.get(edellinen.strip().lower())
+    u = RATING_ORDER.get(new_rating.strip().lower())
+    e = RATING_ORDER.get(previous_rating.strip().lower())
     if u is None or e is None:
         return None
     return u > e
 
 
-def _hinta_liian_matala(hinta) -> bool:
+def _price_too_low(price) -> bool:
     # Tuntematon/jasentamaton hinta EI ole liian matala - se paastetaan
     # lapi, koska puuttuva tieto ei ole sama asia kuin huono tieto.
     try:
-        return float(hinta) < MIN_SHARE_PRICE
+        return float(price) < MIN_SHARE_PRICE
     except (TypeError, ValueError):
         return False
 
 
-def _poimi_hinta(rivi: dict, kentta: str) -> float | None:
+def _extract_price(row: dict, field: str) -> float | None:
     # Puolustava poiminta viiteostohintaa varten: puuttuva, jasentymaton
     # tai ei-positiivinen arvo palauttaa None eika nosta poikkeusta.
     try:
-        hinta = float(rivi.get(kentta))
+        price = float(row.get(field))
     except (TypeError, ValueError):
         return None
-    if hinta <= 0:
+    if price <= 0:
         return None
-    return hinta
+    return price
 
 
 # grades-latest-news-datan action-kentan tunnetut arvot. Downgrade hylkaa
 # rivin kokonaan, muut kasitellaan omina tapauksinaan alla.
-TUNNETUT_ACTIONIT = {"upgrade", "initialise", "hold", "downgrade"}
+KNOWN_ACTIONS = {"upgrade", "initialise", "hold", "downgrade"}
 
 
-def _pisteyta_analyytikkorivi(rivi: dict, nyt: datetime) -> tuple[int, str] | None:
-    if _hinta_liian_matala(rivi.get("priceWhenPosted")):
+def _score_analyst_row(row: dict, now: datetime) -> tuple[int, str] | None:
+    if _price_too_low(row.get("priceWhenPosted")):
         return None
 
-    pvm = _jasenna_iso_pvm(rivi.get("publishedDate"))
-    if pvm is None:
+    published = _parse_iso_datetime(row.get("publishedDate"))
+    if published is None:
         return None
-    if (nyt - pvm).days > MAKSIMI_IKA_ANALYYTIKKO_VRK:
+    if (now - published).days > MAX_ANALYST_AGE_DAYS:
         return None
 
-    uusi = str(rivi.get("newGrade") or "").strip()
-    edellinen = str(rivi.get("previousGrade") or "").strip()
-    yhtio = str(rivi.get("gradingCompany") or "Analyytikko").strip()
-    symboli = str(rivi.get("symbol") or "?").strip()
+    new_rating = str(row.get("newGrade") or "").strip()
+    previous_rating = str(row.get("previousGrade") or "").strip()
+    company = str(row.get("gradingCompany") or "Analyytikko").strip()
+    symbol = str(row.get("symbol") or "?").strip()
 
-    action = rivi.get("action")
-    action_teksti = str(action).strip().lower() if action else None
-    tuntematon = False
+    action = row.get("action")
+    action_text = str(action).strip().lower() if action else None
+    unknown = False
 
-    if action_teksti is not None and action_teksti not in TUNNETUT_ACTIONIT:
+    if action_text is not None and action_text not in KNOWN_ACTIONS:
         _loki.warning(
             f"grades-latest-news: tuntematon action-arvo {action!r} symbolilla "
-            f"{symboli} - kasitellaan neutraalina (hold)"
+            f"{symbol} - kasitellaan neutraalina (hold)"
         )
-        tuntematon = True
-        action_teksti = "hold"
+        unknown = True
+        action_text = "hold"
 
-    if action_teksti == "downgrade":
+    if action_text == "downgrade":
         return None
 
-    if action_teksti is None:
+    if action_text is None:
         # Action-kenttaa ei ole lainkaan riviIla - paatellaan korotus
         # luokkavertailulla, tuntematon kohdellaan aina hold:na (ei tata haaraa).
-        action_teksti = (
-            "upgrade" if _on_korotus_luokkavertailulla(uusi, edellinen) else "hold"
+        action_text = (
+            "upgrade"
+            if _is_upgrade_by_rating_comparison(new_rating, previous_rating)
+            else "hold"
         )
 
-    pisteet = 0
-    if action_teksti == "upgrade":
-        pisteet += 3  # vanha nakemys parani - vahvin signaali
-    elif action_teksti == "initialise":
-        pisteet += 2  # uusi seuranta aloitettu - tuore mutta ei mielenmuutosta
-    elif action_teksti == "hold":
-        pisteet += 1  # mikaan ei muuttunut - heikoin
+    score = 0
+    if action_text == "upgrade":
+        score += 3  # vanha nakemys parani - vahvin signaali
+    elif action_text == "initialise":
+        score += 2  # uusi seuranta aloitettu - tuore mutta ei mielenmuutosta
+    elif action_text == "hold":
+        score += 1  # mikaan ei muuttunut - heikoin
 
-    if uusi.lower() in HYVAKSYTYT_LUOKITUKSET:
-        pisteet += 2
+    if new_rating.lower() in ACCEPTED_RATINGS:
+        score += 2
 
-    if tuntematon:
-        syy = f"{yhtio} muutti luokitusta: {uusi or '?'}"
-    elif action_teksti == "upgrade":
-        syy = f"{yhtio} korotti: {edellinen or '?'} -> {uusi or '?'}"
-    elif action_teksti == "initialise":
-        syy = f"{yhtio} aloitti seurannan: {uusi or '?'}"
+    if unknown:
+        reason = f"{company} muutti luokitusta: {new_rating or '?'}"
+    elif action_text == "upgrade":
+        reason = f"{company} korotti: {previous_rating or '?'} -> {new_rating or '?'}"
+    elif action_text == "initialise":
+        reason = f"{company} aloitti seurannan: {new_rating or '?'}"
     else:
-        syy = f"{yhtio} piti ennallaan: {uusi or '?'}"
+        reason = f"{company} piti ennallaan: {new_rating or '?'}"
 
-    return pisteet, syy
+    return score, reason
 
 
-def _pisteyta_kongressirivi(rivi: dict, tanaan: date) -> tuple[int, str]:
-    pisteet = 1  # rivi lapaisi jo suodatuksen (osto)
+def _score_congress_row(row: dict, today: date) -> tuple[int, str]:
+    score = 1  # rivi lapaisi jo suodatuksen (osto)
 
-    ylaraja = _amount_ylaraja(rivi.get("amount"))
-    if ylaraja is not None:
-        if ylaraja >= 50000:
-            pisteet += 2
-        elif ylaraja >= 15000:
-            pisteet += 1
+    upper_bound = _amount_upper_bound(row.get("amount"))
+    if upper_bound is not None:
+        if upper_bound >= 50000:
+            score += 2
+        elif upper_bound >= 15000:
+            score += 1
 
-    pvm = _jasenna_pvm(rivi.get("transactionDate"))
-    if pvm is not None:
-        ika_paivina = (tanaan - pvm).days
-        if ika_paivina < 30:
-            pisteet += 2
-        elif ika_paivina < 60:
-            pisteet += 1
+    transaction_date = _parse_date(row.get("transactionDate"))
+    if transaction_date is not None:
+        age_days = (today - transaction_date).days
+        if age_days < 30:
+            score += 2
+        elif age_days < 60:
+            score += 1
 
-    pvm_teksti = rivi.get("transactionDate") or "?"
-    if ylaraja is not None:
-        raja_teksti = f"{int(ylaraja):,}".replace(",", " ")
-        syy = f"Kongressiosto {pvm_teksti}, enintaan {raja_teksti} USD"
+    date_text = row.get("transactionDate") or "?"
+    if upper_bound is not None:
+        limit_text = f"{int(upper_bound):,}".replace(",", " ")
+        reason = f"Kongressiosto {date_text}, enintaan {limit_text} USD"
     else:
-        syy = f"Kongressiosto {pvm_teksti}"
+        reason = f"Kongressiosto {date_text}"
 
-    return pisteet, syy
+    return score, reason
 
 
-def _sisapiirin_arvo(rivi: dict) -> float | None:
+def _insider_value(row: dict) -> float | None:
     try:
-        return float(rivi.get("securitiesTransacted")) * float(rivi.get("price"))
+        return float(row.get("securitiesTransacted")) * float(row.get("price"))
     except (TypeError, ValueError):
         return None
 
 
-def _pisteyta_sisapiirirvi(rivi: dict, tanaan: date) -> tuple[int, str] | None:
-    if _hinta_liian_matala(rivi.get("price")):
+def _score_insider_row(row: dict, today: date) -> tuple[int, str] | None:
+    if _price_too_low(row.get("price")):
         return None
 
-    pisteet = 1  # rivi lapaisi jo suodatuksen (osto)
+    score = 1  # rivi lapaisi jo suodatuksen (osto)
 
-    arvo = _sisapiirin_arvo(rivi)
-    if arvo is not None:
-        if arvo >= 50000:
-            pisteet += 2
-        elif arvo >= 15000:
-            pisteet += 1
+    value = _insider_value(row)
+    if value is not None:
+        if value >= 50000:
+            score += 2
+        elif value >= 15000:
+            score += 1
 
-    pvm = _jasenna_pvm(rivi.get("transactionDate"))
-    if pvm is not None:
-        ika_paivina = (tanaan - pvm).days
-        if ika_paivina < 30:
-            pisteet += 2
-        elif ika_paivina < 60:
-            pisteet += 1
+    transaction_date = _parse_date(row.get("transactionDate"))
+    if transaction_date is not None:
+        age_days = (today - transaction_date).days
+        if age_days < 30:
+            score += 2
+        elif age_days < 60:
+            score += 1
 
-    pvm_teksti = rivi.get("transactionDate") or "?"
-    if arvo is not None:
-        arvo_teksti = f"{int(arvo):,}".replace(",", " ")
-        syy = f"Sisapiiriosto {pvm_teksti}, noin {arvo_teksti} USD"
+    date_text = row.get("transactionDate") or "?"
+    if value is not None:
+        value_text = f"{int(value):,}".replace(",", " ")
+        reason = f"Sisapiiriosto {date_text}, noin {value_text} USD"
     else:
-        syy = f"Sisapiiriosto {pvm_teksti}"
+        reason = f"Sisapiiriosto {date_text}"
 
-    return pisteet, syy
+    return score, reason
 
 
-def _tavoitehinnan_arvot(rivi: dict) -> tuple[float, float] | None:
-    tavoite = rivi.get("priceTarget")
-    if tavoite is None:
-        tavoite = rivi.get("adjPriceTarget")
-    nykyhinta = rivi.get("priceWhenPosted")
+def _price_target_values(row: dict) -> tuple[float, float] | None:
+    target = row.get("priceTarget")
+    if target is None:
+        target = row.get("adjPriceTarget")
+    current_price = row.get("priceWhenPosted")
     try:
-        return float(tavoite), float(nykyhinta)
+        return float(target), float(current_price)
     except (TypeError, ValueError):
         return None
 
 
-def _pisteyta_tavoitehintarivi(rivi: dict, nyt: datetime) -> tuple[int, str] | None:
-    if _hinta_liian_matala(rivi.get("priceWhenPosted")):
+def _score_price_target_row(row: dict, now: datetime) -> tuple[int, str] | None:
+    if _price_too_low(row.get("priceWhenPosted")):
         return None
 
-    pvm = _jasenna_iso_pvm(rivi.get("publishedDate"))
-    if pvm is None:
+    published = _parse_iso_datetime(row.get("publishedDate"))
+    if published is None:
         return None
-    if (nyt - pvm).days > MAKSIMI_IKA_ANALYYTIKKO_VRK:
+    if (now - published).days > MAX_ANALYST_AGE_DAYS:
         return None
 
-    arvot = _tavoitehinnan_arvot(rivi)
-    if arvot is None:
+    values = _price_target_values(row)
+    if values is None:
         return None
-    tavoite, nykyhinta = arvot
+    target, current_price = values
 
-    if nykyhinta <= 0 or tavoite <= nykyhinta:
+    if current_price <= 0 or target <= current_price:
         return None
 
     # Kaannetty U: uskottava nousuvara palkitaan, epauskottava ei. Yli 60 %:n
     # nousuvara kertoo kaytannossa lahes aina ahdinkotilanteesta tai
     # vanhentuneesta tavoitehinnasta, ei vahvasta nakemyksesta - siksi sita
     # kohdellaan heikkona signaalina (+1), ei vahvana (+3).
-    nousu_pct = (tavoite - nykyhinta) / nykyhinta * 100
-    if nousu_pct > 60:
-        pisteet = 1
-    elif nousu_pct >= 15:
-        pisteet = 3
-    elif nousu_pct >= 5:
-        pisteet = 2
+    upside_pct = (target - current_price) / current_price * 100
+    if upside_pct > 60:
+        score = 1
+    elif upside_pct >= 15:
+        score = 3
+    elif upside_pct >= 5:
+        score = 2
     else:
-        pisteet = 1
+        score = 1
 
-    yhtio = str(rivi.get("analystCompany") or "Analyytikko").strip()
-    pvm_teksti = str(rivi.get("publishedDate") or "?")[:10]
-    syy = (
-        f"{yhtio} tavoitehinta {tavoite:g} USD, "
-        f"+{nousu_pct:.0f} % nykyhinnasta ({pvm_teksti})"
+    company = str(row.get("analystCompany") or "Analyytikko").strip()
+    date_text = str(row.get("publishedDate") or "?")[:10]
+    reason = (
+        f"{company} tavoitehinta {target:g} USD, "
+        f"+{upside_pct:.0f} % nykyhinnasta ({date_text})"
     )
 
-    return pisteet, syy
+    return score, reason
 
 
-LAHTEET = ("analyytikko", "kongressi", "sisapiiri", "tavoitehinta")
+SOURCES = ("analyytikko", "kongressi", "sisapiiri", "tavoitehinta")
 
 
-def _lisaa_havainto(
-    tulokset: dict,
-    symboli: str,
-    lahde: str,
-    pisteet: int,
-    syy: str,
-    hinta: float | None = None,
+def _add_observation(
+    results: dict,
+    symbol: str,
+    source: str,
+    score: int,
+    reason: str,
+    price: float | None = None,
 ) -> None:
-    tieto = tulokset.setdefault(symboli, {nimi: [] for nimi in LAHTEET})
-    tieto[lahde].append((pisteet, syy, hinta))
+    entry = results.setdefault(symbol, {name: [] for name in SOURCES})
+    entry[source].append((score, reason, price))
 
 
-def _paras(
-    havainnot: list[tuple[int, str, float | None]],
+def _best(
+    observations: list[tuple[int, str, float | None]],
 ) -> tuple[int, str | None, float | None]:
-    if not havainnot:
+    if not observations:
         return 0, None, None
     # key vertailee vain pisteita (h[0]), joten hintoja (h[2], voi olla
     # None) ei koskaan verrata keskenaan.
-    return max(havainnot, key=lambda h: h[0])
+    return max(observations, key=lambda h: h[0])
 
 
-def _yhdista_symboli(symboli: str, tieto: dict) -> dict:
-    lahteet_mukana = [nimi for nimi in LAHTEET if tieto[nimi]]
+def _combine_symbol(symbol: str, entry: dict) -> dict:
+    sources_present = [name for name in SOURCES if entry[name]]
 
-    pisteet = 0
-    toistuvuus_ekstra = 0
-    syy_osat = []
-    vahvat_lahteet = 0  # lahteet joiden oma paras rivi >= CO_OCCURRENCE_THRESHOLD
-    lahteen_paras: dict = {}  # nimi -> (paras_pisteet, paras_hinta)
+    score = 0
+    repeat_extra = 0
+    reason_parts = []
+    strong_sources = 0  # lahteet joiden oma paras rivi >= CO_OCCURRENCE_THRESHOLD
+    best_by_source: dict = {}  # nimi -> (paras_pisteet, paras_hinta)
 
-    for nimi in LAHTEET:
-        havainnot = tieto[nimi]
-        if not havainnot:
+    for name in SOURCES:
+        observations = entry[name]
+        if not observations:
             continue
-        paras_pisteet, paras_syy, paras_hinta = _paras(havainnot)
-        pisteet += paras_pisteet
-        lahteen_paras[nimi] = (paras_pisteet, paras_hinta)
+        best_score, best_reason, best_price = _best(observations)
+        score += best_score
+        best_by_source[name] = (best_score, best_price)
 
-        if paras_pisteet >= CO_OCCURRENCE_THRESHOLD:
-            vahvat_lahteet += 1
+        if best_score >= CO_OCCURRENCE_THRESHOLD:
+            strong_sources += 1
 
-        ekstra = len(havainnot) - 1
-        toistuvuus_ekstra += ekstra
+        extra = len(observations) - 1
+        repeat_extra += extra
 
-        if paras_syy:
-            osa = paras_syy
-            if ekstra > 0:
-                osa += f" (+{ekstra} muuta mainintaa)"
-            syy_osat.append(osa)
+        if best_reason:
+            part = best_reason
+            if extra > 0:
+                part += f" (+{extra} muuta mainintaa)"
+            reason_parts.append(part)
 
-    toistuvuusbonus = min(3, toistuvuus_ekstra)
+    repeat_bonus = min(3, repeat_extra)
     # +3 kerran jos VAHINTAAN KAKSI lahdetta antoivat itsenaisesti vahintaan
     # CO_OCCURRENCE_THRESHOLD pistetta. Bonus palkitsee kahden OIKEAN
     # signaalin yhtapitavyyden, ei kahden heikon rivin sattumaa - 3 pistetta
     # on alin taso jolla lahde on sanonut jotain positiivista (esim. luokitus
     # Buy, tavoite 15-60 % ylapuolella, tai merkittava tuore osto). Sita
     # heikompi rivi on lasna mutta ei ole signaali.
-    molemmat_bonus = 3 if vahvat_lahteet >= 2 else 0
+    both_bonus = 3 if strong_sources >= 2 else 0
 
-    pisteet += toistuvuusbonus + molemmat_bonus
+    score += repeat_bonus + both_bonus
 
     # lahde-arvo kuvaa mista data tuli, ei pisteytysta - 'molemmat' merkitaan
     # aina kun useampi kuin yksi lahde loytyi, riippumatta bonuksesta.
-    lahde = "molemmat" if len(lahteet_mukana) > 1 else lahteet_mukana[0]
+    source = "molemmat" if len(sources_present) > 1 else sources_present[0]
 
     # viiteostohinta: vahvin lahde jolla on hinta voittaa (suurin
     # paras_pisteet jonka paras_hinta ei ole None). Tasapisteissa ratkaisee
     # LAHTEET-jarjestys (kayty lapi jarjestyksessa, vaihdetaan vain jos
     # aidosti parempi loytyy), jotta tulos on toistettava. Jos yhdellakaan
     # lahteella ei ole hintaa, jaa None.
-    viiteostohinta = None
-    paras_hinnan_pisteet = None
-    for nimi in LAHTEET:
-        if nimi not in lahteen_paras:
+    reference_price = None
+    best_price_score = None
+    for name in SOURCES:
+        if name not in best_by_source:
             continue
-        ehdokkaan_pisteet, ehdokkaan_hinta = lahteen_paras[nimi]
-        if ehdokkaan_hinta is None:
+        candidate_score, candidate_price = best_by_source[name]
+        if candidate_price is None:
             continue
-        if paras_hinnan_pisteet is None or ehdokkaan_pisteet > paras_hinnan_pisteet:
-            paras_hinnan_pisteet = ehdokkaan_pisteet
-            viiteostohinta = ehdokkaan_hinta
+        if best_price_score is None or candidate_score > best_price_score:
+            best_price_score = candidate_score
+            reference_price = candidate_price
 
     return {
-        "symboli": symboli,
-        "pisteet": pisteet,
-        "lahde": lahde,
-        "syy": "; ".join(syy_osat),
-        "viiteostohinta": viiteostohinta,
+        "symbol": symbol,
+        "score": score,
+        "source": source,
+        "reason": "; ".join(reason_parts),
+        "reference_price": reference_price,
     }
 
 
-def muodosta_ehdokkaat(
-    analyytikkorivit: list[dict],
-    kongressirivit: list[dict],
-    sisapiirirvit: list[dict],
-    tavoitehintarivit: list[dict],
-    ohita_symbolit: list[str],
-    us_symbolit: set[str],
+def build_candidates(
+    analyst_rows: list[dict],
+    congress_rows: list[dict],
+    insider_rows: list[dict],
+    price_target_rows: list[dict],
+    skip_symbols: list[str],
+    us_symbols: set[str],
 ) -> list[dict]:
-    ohita = set(ohita_symbolit or [])
-    sallitut = set(us_symbolit or [])
-    nyt = datetime.now(timezone.utc)
-    tanaan = nyt.date()
+    skip = set(skip_symbols or [])
+    allowed = set(us_symbols or [])
+    now = datetime.now(timezone.utc)
+    today = now.date()
 
-    tulokset: dict = {}
+    results: dict = {}
 
-    for rivi in analyytikkorivit:
-        symboli = str(rivi.get("symbol") or "").strip()
-        if (
-            not _kelvollinen_symboli(symboli)
-            or symboli in ohita
-            or symboli not in sallitut
-        ):
+    for row in analyst_rows:
+        symbol = str(row.get("symbol") or "").strip()
+        if not _is_valid_symbol(symbol) or symbol in skip or symbol not in allowed:
             continue
-        tulos = _pisteyta_analyytikkorivi(rivi, nyt)
-        if tulos is None:
+        result = _score_analyst_row(row, now)
+        if result is None:
             continue
-        pisteet, syy = tulos
-        hinta = _poimi_hinta(rivi, "priceWhenPosted")
-        _lisaa_havainto(tulokset, symboli, "analyytikko", pisteet, syy, hinta)
+        score, reason = result
+        price = _extract_price(row, "priceWhenPosted")
+        _add_observation(results, symbol, "analyytikko", score, reason, price)
 
-    for rivi in kongressirivit:
-        symboli = str(rivi.get("symbol") or "").strip()
-        if (
-            not _kelvollinen_symboli(symboli)
-            or symboli in ohita
-            or symboli not in sallitut
-        ):
+    for row in congress_rows:
+        symbol = str(row.get("symbol") or "").strip()
+        if not _is_valid_symbol(symbol) or symbol in skip or symbol not in allowed:
             continue
-        tyyppi = str(rivi.get("type") or "").strip().lower()
-        if tyyppi != "purchase":
+        type_ = str(row.get("type") or "").strip().lower()
+        if type_ != "purchase":
             continue
-        pisteet, syy = _pisteyta_kongressirivi(rivi, tanaan)
-        _lisaa_havainto(tulokset, symboli, "kongressi", pisteet, syy)
+        score, reason = _score_congress_row(row, today)
+        _add_observation(results, symbol, "kongressi", score, reason)
 
-    for rivi in sisapiirirvit:
-        symboli = str(rivi.get("symbol") or "").strip()
-        if (
-            not _kelvollinen_symboli(symboli)
-            or symboli in ohita
-            or symboli not in sallitut
-        ):
+    for row in insider_rows:
+        symbol = str(row.get("symbol") or "").strip()
+        if not _is_valid_symbol(symbol) or symbol in skip or symbol not in allowed:
             continue
-        suunta = str(rivi.get("transactionType") or "").strip().upper()
-        if not suunta.startswith("P-"):
+        direction = str(row.get("transactionType") or "").strip().upper()
+        if not direction.startswith("P-"):
             continue
-        tulos = _pisteyta_sisapiirirvi(rivi, tanaan)
-        if tulos is None:
+        result = _score_insider_row(row, today)
+        if result is None:
             continue
-        pisteet, syy = tulos
-        _lisaa_havainto(tulokset, symboli, "sisapiiri", pisteet, syy)
+        score, reason = result
+        _add_observation(results, symbol, "sisapiiri", score, reason)
 
-    for rivi in tavoitehintarivit:
-        symboli = str(rivi.get("symbol") or "").strip()
-        if (
-            not _kelvollinen_symboli(symboli)
-            or symboli in ohita
-            or symboli not in sallitut
-        ):
+    for row in price_target_rows:
+        symbol = str(row.get("symbol") or "").strip()
+        if not _is_valid_symbol(symbol) or symbol in skip or symbol not in allowed:
             continue
-        tulos = _pisteyta_tavoitehintarivi(rivi, nyt)
-        if tulos is None:
+        result = _score_price_target_row(row, now)
+        if result is None:
             continue
-        pisteet, syy = tulos
-        hinta = _poimi_hinta(rivi, "priceWhenPosted")
-        _lisaa_havainto(tulokset, symboli, "tavoitehinta", pisteet, syy, hinta)
+        score, reason = result
+        price = _extract_price(row, "priceWhenPosted")
+        _add_observation(results, symbol, "tavoitehinta", score, reason, price)
 
-    ehdokkaat = [
-        _yhdista_symboli(symboli, tieto) for symboli, tieto in tulokset.items()
-    ]
+    candidates = [_combine_symbol(symbol, entry) for symbol, entry in results.items()]
 
-    ehdokkaat.sort(key=lambda e: e["pisteet"], reverse=True)
-    ehdokkaat = ehdokkaat[:CANDIDATE_TARGET]
+    candidates.sort(key=lambda e: e["score"], reverse=True)
+    candidates = candidates[:CANDIDATE_TARGET]
 
-    for i, ehdokas in enumerate(ehdokkaat, start=1):
-        ehdokas["sijoitus"] = i
+    for i, candidate in enumerate(candidates, start=1):
+        candidate["rank"] = i
 
     # jatkoon: vahintaan CANDIDATE_THRESHOLD pistetta, korkeintaan MAX_SELECTED
     # kpl parhaasta paasta. Lista on jo pistejarjestyksessa, joten kynnyksen
     # ylittavat ehdokkaat muodostavat aina listan alun - riittaa laskea
     # kuinka moni ylittaa kynnyksen ja rajata se MAX_SELECTED-maaraan.
-    kynnyksen_ylittavia = sum(
-        1 for e in ehdokkaat if e["pisteet"] >= CANDIDATE_THRESHOLD
-    )
-    jatkoon_maara = min(kynnyksen_ylittavia, MAX_SELECTED)
-    for i, ehdokas in enumerate(ehdokkaat):
-        ehdokas["jatkoon"] = 1 if i < jatkoon_maara else 0
+    above_threshold = sum(1 for e in candidates if e["score"] >= CANDIDATE_THRESHOLD)
+    advanced_count = min(above_threshold, MAX_SELECTED)
+    for i, candidate in enumerate(candidates):
+        candidate["advanced"] = 1 if i < advanced_count else 0
 
-    return ehdokkaat
+    return candidates
 
 
-def _aja_tarkistus(ajo_id: str, ajotyyppi: str, polku) -> str:
-    aktiiviset = tietokanta.get_open_positions(polku)
+def _run_check(run_id: str, run_type: str, db_path) -> str:
+    open_positions = tietokanta.get_open_positions(db_path)
 
-    for positio in aktiiviset:
+    for position in open_positions:
         tietokanta.insert_candidate(
-            run_id=ajo_id,
-            run_type=ajotyyppi,
-            symbol=positio["symbol"],
+            run_id=run_id,
+            run_type=run_type,
+            symbol=position["symbol"],
             source="positio",
             reason="Kahden viikon tarkistus",
             advanced=1,
-            db_path=polku,
+            db_path=db_path,
         )
 
-    yhteenveto = f"{len(aktiiviset)} aktiivista positiota tarkistukseen"
-    _loki.info(f"Ajo {ajo_id} ({ajotyyppi}): {yhteenveto}")
-    return yhteenveto
+    summary = f"{len(open_positions)} aktiivista positiota tarkistukseen"
+    _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
+    return summary
 
 
-def _aja_normaali(ajo_id: str, ajotyyppi: str, polku) -> str:
-    aktiiviset = tietokanta.get_open_positions(polku)
-    ohita_symbolit = [p["symbol"] for p in aktiiviset]
+def _run_normal(run_id: str, run_type: str, db_path) -> str:
+    open_positions = tietokanta.get_open_positions(db_path)
+    skip_symbols = [p["symbol"] for p in open_positions]
 
-    analyytikkorivit: list[dict] = []
-    kongressirivit: list[dict] = []
-    sisapiirirvit: list[dict] = []
-    tavoitehintarivit: list[dict] = []
-    epaonnistuneet = []
-
-    try:
-        analyytikkorivit = hae_analyytikkomuutokset()
-    except Exception as virhe:
-        _loki.warning(f"Analyytikkodatan haku epaonnistui: {virhe}")
-        epaonnistuneet.append("analyytikko")
+    analyst_rows: list[dict] = []
+    congress_rows: list[dict] = []
+    insider_rows: list[dict] = []
+    price_target_rows: list[dict] = []
+    failed = []
 
     try:
-        kongressirivit = hae_kongressikaupat()
-    except Exception as virhe:
-        _loki.warning(f"Kongressidatan haku epaonnistui: {virhe}")
-        epaonnistuneet.append("kongressi")
+        analyst_rows = fetch_analyst_changes()
+    except Exception as error:
+        _loki.warning(f"Analyytikkodatan haku epaonnistui: {error}")
+        failed.append("analyytikko")
 
     try:
-        sisapiirirvit = hae_sisapiirikaupat()
-    except Exception as virhe:
-        _loki.warning(f"Sisapiiridatan haku epaonnistui: {virhe}")
-        epaonnistuneet.append("sisapiiri")
+        congress_rows = fetch_congress_trades()
+    except Exception as error:
+        _loki.warning(f"Kongressidatan haku epaonnistui: {error}")
+        failed.append("kongressi")
 
     try:
-        tavoitehintarivit = hae_tavoitehinnat()
-    except Exception as virhe:
-        _loki.warning(f"Tavoitehintadatan haku epaonnistui: {virhe}")
-        epaonnistuneet.append("tavoitehinta")
+        insider_rows = fetch_insider_trades()
+    except Exception as error:
+        _loki.warning(f"Sisapiiridatan haku epaonnistui: {error}")
+        failed.append("sisapiiri")
 
-    if len(epaonnistuneet) == 4:
+    try:
+        price_target_rows = fetch_price_targets()
+    except Exception as error:
+        _loki.warning(f"Tavoitehintadatan haku epaonnistui: {error}")
+        failed.append("tavoitehinta")
+
+    if len(failed) == 4:
         raise RuntimeError(
             "Kaikki nelja lahdetta (analyytikko, kongressi, sisapiiri, tavoitehinta) "
             "epaonnistuivat"
@@ -836,40 +818,40 @@ def _aja_normaali(ajo_id: str, ajotyyppi: str, polku) -> str:
 
     # US-symbolisuodatus ei kuulu "yksi lahde saa epaonnistua" -saannon piiriin:
     # jos tama epaonnistuu, koko ajo keskeytyy tahan poikkeukseen.
-    us_symbolit = hae_us_symbolit()
+    us_symbols = fetch_us_symbols()
 
-    ehdokkaat = muodosta_ehdokkaat(
-        analyytikkorivit,
-        kongressirivit,
-        sisapiirirvit,
-        tavoitehintarivit,
-        ohita_symbolit,
-        us_symbolit,
+    candidates = build_candidates(
+        analyst_rows,
+        congress_rows,
+        insider_rows,
+        price_target_rows,
+        skip_symbols,
+        us_symbols,
     )
 
-    for ehdokas in ehdokkaat:
+    for candidate in candidates:
         tietokanta.insert_candidate(
-            run_id=ajo_id,
-            run_type=ajotyyppi,
-            symbol=ehdokas["symboli"],
-            source=ehdokas["lahde"],
-            reason=ehdokas["syy"],
-            score=ehdokas["pisteet"],
+            run_id=run_id,
+            run_type=run_type,
+            symbol=candidate["symbol"],
+            source=candidate["source"],
+            reason=candidate["reason"],
+            score=candidate["score"],
             reason_is_valid=None,
             reason_note=None,
-            reference_price=ehdokas.get("viiteostohinta"),
-            rank=ehdokas["sijoitus"],
-            advanced=ehdokas["jatkoon"],
-            db_path=polku,
+            reference_price=candidate.get("reference_price"),
+            rank=candidate["rank"],
+            advanced=candidate["advanced"],
+            db_path=db_path,
         )
 
-    jatkoon_maara = sum(1 for e in ehdokkaat if e["jatkoon"] == 1)
-    yhteenveto = f"{len(ehdokkaat)} ehdokasta, {jatkoon_maara} jatkoon"
-    _loki.info(f"Ajo {ajo_id} ({ajotyyppi}): {yhteenveto}")
-    return yhteenveto
+    advanced_count = sum(1 for e in candidates if e["advanced"] == 1)
+    summary = f"{len(candidates)} ehdokasta, {advanced_count} jatkoon"
+    _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
+    return summary
 
 
-def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.DEFAULT_DB_PATH) -> str:
-    if ajotyyppi == "tarkistus":
-        return _aja_tarkistus(ajo_id, ajotyyppi, polku)
-    return _aja_normaali(ajo_id, ajotyyppi, polku)
+def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    if run_type == "tarkistus":
+        return _run_check(run_id, run_type, db_path)
+    return _run_normal(run_id, run_type, db_path)

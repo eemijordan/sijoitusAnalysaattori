@@ -192,11 +192,3 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     )
     _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
     return summary
-
-
-def aja(ajo_id, ajotyyppi, polku=tietokanta.DEFAULT_DB_PATH) -> str:
-    # Valiaikainen taaksepainyhteensopiva ohitus - orkestroija kutsuu
-    # toistaiseksi kaikkia agentteja nimella aja(polku=...), koska agentit
-    # nimetaan uudelleen yksi kerrallaan (vaihe R, askel 3). Poistetaan kun
-    # viimeinenkin agentti on nimetty ja orkestroija kutsuu run():ia suoraan.
-    return run(ajo_id, ajotyyppi, db_path=polku)
