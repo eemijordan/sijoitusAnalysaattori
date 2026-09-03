@@ -136,3 +136,23 @@ def test_symboli_voidaan_ostaa_uudelleen_edellisen_position_sulkeuduttua(db_polk
         yhteys.close()
 
     assert tietokanta.onko_jo_aktiivinen("AAPL", db_polku) is True
+
+
+def test_ehdokkaan_pisteet_tallentuvat_ja_luetaan_takaisin(db_polku):
+    tietokanta.alusta_tietokanta(db_polku)
+
+    tietokanta.lisaa_ehdokas(
+        ajo_id="ajo1",
+        ajotyyppi="normaali",
+        symboli="AAPL",
+        lahde="analyytikko",
+        syy="Testisyy",
+        pisteet=7.5,
+        sijoitus=1,
+        jatkoon=1,
+        polku=db_polku,
+    )
+
+    rivit = tietokanta.hae_ehdokkaat("ajo1", vain_jatkoon=False, polku=db_polku)
+    assert len(rivit) == 1
+    assert rivit[0]["pisteet"] == 7.5

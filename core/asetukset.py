@@ -12,7 +12,11 @@ POSITION_KOKO = 1000     # USD per positio (10 %)
 MAX_POSITIOT = 10
 RR_KYNNYS = 7             # minimipisteet ostolle
 EHDOKAS_TAVOITE = 20      # montako ehdokasta Agentti 1 hakee ennen karsintaa
-VALITTAVAT = 8            # montako ehdokasta etenee Agentti 2:lle
+VALITTAVAT = 8            # jatkoon menevien YLARAJA (ei tavoite)
+# Analyytikkorivi "piti ennallaan + Buy" saa 3 pistetta, aito korotus + Buy
+# saa 5, ja merkittava tuore osto saa 4-5. Kynnys 4 karsii siis juuri ne
+# rivit joilla ei tapahtunut mitaan, mutta paastaa lapi aidot signaalit.
+EHDOKAS_KYNNYS = 4        # minimipisteet jotta ehdokas etenee Agentti 2:lle
 
 
 def _hae_api_avain(ymparistomuuttuja: str) -> str:

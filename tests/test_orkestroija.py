@@ -1,8 +1,44 @@
+from datetime import date, datetime, timedelta, timezone
+
+from agents import trendinmetsastaja
 from core import orkestroija, tietokanta
 
 
-def test_aja_normaali_paasta_paahan(tmp_path):
+def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
+
+    tuore_iso = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    tuore_pvm = (date.today() - timedelta(days=5)).isoformat()
+
+    monkeypatch.setattr(
+        trendinmetsastaja,
+        "hae_analyytikkomuutokset",
+        lambda: [
+            {
+                "symbol": "AAPL",
+                "publishedDate": tuore_iso,
+                "newGrade": "Buy",
+                "previousGrade": "Hold",
+                "gradingCompany": "Goldman Sachs",
+                "action": "upgrade",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja,
+        "hae_kongressikaupat",
+        lambda: [
+            {
+                "symbol": "MSFT",
+                "transactionDate": tuore_pvm,
+                "type": "Purchase",
+                "amount": "$100,001 - $250,000",
+            },
+        ],
+    )
+    monkeypatch.setattr(trendinmetsastaja, "hae_sisapiirikaupat", lambda: [])
+    monkeypatch.setattr(trendinmetsastaja, "hae_tavoitehinnat", lambda: [])
+    monkeypatch.setattr(trendinmetsastaja, "hae_us_symbolit", lambda: {"AAPL", "MSFT"})
 
     ajo_id = orkestroija.aja_normaali(polku)
 

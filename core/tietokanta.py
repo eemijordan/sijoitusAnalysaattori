@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS trend_candidates (
     symboli TEXT NOT NULL,
     lahde TEXT NOT NULL,
     syy TEXT,
+    pisteet REAL,
     onko_syy_jarkeva INTEGER,
     syy_perustelu TEXT,
     viiteostohinta REAL,
@@ -161,5 +162,154 @@ def onko_jo_aktiivinen(symboli: str, polku=OLETUS_TIETOKANTA) -> bool:
             (symboli,),
         ).fetchone()
         return rivi is not None
+    finally:
+        yhteys.close()
+
+
+def lisaa_ehdokas(
+    ajo_id: str,
+    ajotyyppi: str,
+    symboli: str,
+    lahde: str,
+    syy: str | None = None,
+    pisteet: float | None = None,
+    onko_syy_jarkeva: bool | None = None,
+    syy_perustelu: str | None = None,
+    viiteostohinta: float | None = None,
+    sijoitus: int | None = None,
+    jatkoon: int = 0,
+    polku=OLETUS_TIETOKANTA,
+) -> int:
+    yhteys = avaa_yhteys(polku)
+    try:
+        kursori = yhteys.execute(
+            """
+            INSERT INTO trend_candidates (
+                ajo_id, ajotyyppi, symboli, lahde, syy, pisteet, onko_syy_jarkeva,
+                syy_perustelu, viiteostohinta, sijoitus, jatkoon, pvm
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ajo_id,
+                ajotyyppi,
+                symboli,
+                lahde,
+                syy,
+                pisteet,
+                None if onko_syy_jarkeva is None else int(onko_syy_jarkeva),
+                syy_perustelu,
+                viiteostohinta,
+                sijoitus,
+                int(jatkoon),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        yhteys.commit()
+        return kursori.lastrowid
+    finally:
+        yhteys.close()
+
+
+def hae_ehdokkaat(
+    ajo_id: str, vain_jatkoon: bool = True, polku=OLETUS_TIETOKANTA
+) -> list[dict]:
+    yhteys = avaa_yhteys(polku)
+    try:
+        kysely = "SELECT * FROM trend_candidates WHERE ajo_id = ?"
+        parametrit = [ajo_id]
+        if vain_jatkoon:
+            kysely += " AND jatkoon = 1"
+        kysely += " ORDER BY id"
+
+        rivit = yhteys.execute(kysely, parametrit).fetchall()
+        return [dict(rivi) for rivi in rivit]
+    finally:
+        yhteys.close()
+
+
+def lisaa_pisteytys(
+    ajo_id: str,
+    ajotyyppi: str,
+    symboli: str,
+    risk_reward_pisteet: float,
+    indikaattorit_json: str | None = None,
+    perustelu: str | None = None,
+    polku=OLETUS_TIETOKANTA,
+) -> int:
+    yhteys = avaa_yhteys(polku)
+    try:
+        kursori = yhteys.execute(
+            """
+            INSERT INTO technical_scores (
+                ajo_id, ajotyyppi, symboli, risk_reward_pisteet,
+                indikaattorit_json, perustelu, pvm
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ajo_id,
+                ajotyyppi,
+                symboli,
+                risk_reward_pisteet,
+                indikaattorit_json,
+                perustelu,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        yhteys.commit()
+        return kursori.lastrowid
+    finally:
+        yhteys.close()
+
+
+def hae_pisteytykset(ajo_id: str, polku=OLETUS_TIETOKANTA) -> list[dict]:
+    yhteys = avaa_yhteys(polku)
+    try:
+        rivit = yhteys.execute(
+            "SELECT * FROM technical_scores WHERE ajo_id = ? ORDER BY id",
+            (ajo_id,),
+        ).fetchall()
+        return [dict(rivi) for rivi in rivit]
+    finally:
+        yhteys.close()
+
+
+def lisaa_paatos(
+    ajo_id: str,
+    ajotyyppi: str,
+    symboli: str,
+    paatos: str,
+    perustelu: str | None = None,
+    polku=OLETUS_TIETOKANTA,
+) -> int:
+    yhteys = avaa_yhteys(polku)
+    try:
+        kursori = yhteys.execute(
+            """
+            INSERT INTO decisions (ajo_id, ajotyyppi, symboli, paatos, perustelu, pvm)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ajo_id,
+                ajotyyppi,
+                symboli,
+                paatos,
+                perustelu,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        yhteys.commit()
+        return kursori.lastrowid
+    finally:
+        yhteys.close()
+
+
+def hae_paatokset(ajo_id: str, polku=OLETUS_TIETOKANTA) -> list[dict]:
+    yhteys = avaa_yhteys(polku)
+    try:
+        rivit = yhteys.execute(
+            "SELECT * FROM decisions WHERE ajo_id = ? ORDER BY id",
+            (ajo_id,),
+        ).fetchall()
+        return [dict(rivi) for rivi in rivit]
     finally:
         yhteys.close()
