@@ -11,180 +11,192 @@ from core.asetukset import (
 _loki = loki.get_logger(__name__)
 
 
-def paata_osto(pisteytys: dict, ehdokas: dict | None, tila: dict) -> tuple[str, str]:
-    symboli = pisteytys.get("symbol")
-    hinta = pisteytys.get("price")
+def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, str]:
+    symbol = score.get("symbol")
+    price = score.get("price")
 
     # 1. hinta puuttuu tai on virheellinen - ilman sita osakemaaraa ei voi
     # laskea eika ehtoa 4 tarkistaa.
-    if hinta is None or hinta <= 0:
+    if price is None or price <= 0:
         return (
             "hylatty",
-            f"hinta puuttuu tai on virheellinen ({hinta!r}), "
+            f"hinta puuttuu tai on virheellinen ({price!r}), "
             f"ehtoa 4 ei voida tarkistaa",
         )
 
     # 2. duplikaatti - sama symboli ei saa olla aktiivisena kahdesti.
-    if symboli in tila["aktiiviset_symbolit"]:
-        return "hylatty", f"{symboli} on jo aktiivinen positio (duplikaatti)"
+    if symbol in state["active_symbols"]:
+        return "hylatty", f"{symbol} on jo aktiivinen positio (duplikaatti)"
 
     # 3. RR-kynnys.
-    rr = pisteytys.get("risk_reward_score")
+    rr = score.get("risk_reward_score")
     if rr is None or rr < RR_THRESHOLD:
         return "hylatty", f"risk_reward_pisteet {rr} < RR_THRESHOLD {RR_THRESHOLD}"
 
     # 4. hinta ei saa olla karannut liian kauas viiteostohinnasta. Jos
     # viiteostohintaa ei ole, ehto ohitetaan (ei hylata) ja se nakyy
     # perustelussa - tama ei ole hiljainen huononeminen.
-    viiteostohinta = ehdokas.get("reference_price") if ehdokas else None
-    hintaehto_teksti = "viiteostohinta puuttuu, ehto 4 ohitettu"
-    if viiteostohinta is not None:
-        poikkeama = (hinta - viiteostohinta) / viiteostohinta
-        poikkeama_pct = poikkeama * 100
-        raja_pct = MAX_PRICE_DRIFT * 100
-        if poikkeama > 0:
-            hintaehto_teksti = (
-                f"hinta {hinta:.2f} on {poikkeama_pct:.1f} % yli viiteostohinnan "
-                f"{viiteostohinta:.2f} (raja {raja_pct:.1f} %)"
+    reference_price = candidate.get("reference_price") if candidate else None
+    price_condition_text = "viiteostohinta puuttuu, ehto 4 ohitettu"
+    if reference_price is not None:
+        deviation = (price - reference_price) / reference_price
+        deviation_pct = deviation * 100
+        limit_pct = MAX_PRICE_DRIFT * 100
+        if deviation > 0:
+            price_condition_text = (
+                f"hinta {price:.2f} on {deviation_pct:.1f} % yli viiteostohinnan "
+                f"{reference_price:.2f} (raja {limit_pct:.1f} %)"
             )
         else:
-            hintaehto_teksti = (
-                f"hinta {hinta:.2f} on {abs(poikkeama_pct):.1f} % alle viiteostohinnan "
-                f"{viiteostohinta:.2f} (raja {raja_pct:.1f} %)"
+            price_condition_text = (
+                f"hinta {price:.2f} on {abs(deviation_pct):.1f} % alle "
+                f"viiteostohinnan {reference_price:.2f} (raja {limit_pct:.1f} %)"
             )
-        if abs(poikkeama) > MAX_PRICE_DRIFT:
-            return "hylatty", hintaehto_teksti
+        if abs(deviation) > MAX_PRICE_DRIFT:
+            return "hylatty", price_condition_text
 
     # 5. kapasiteetti.
-    if tila["aktiivisia"] >= MAX_POSITIONS:
+    if state["active_count"] >= MAX_POSITIONS:
         return (
             "hylatty",
-            f"aktiivisia positioita {tila['aktiivisia']} "
+            f"aktiivisia positioita {state['active_count']} "
             f">= MAX_POSITIONS {MAX_POSITIONS}",
         )
 
     # 6. kateinen.
-    if tila["kateinen"] < POSITION_SIZE:
+    if state["cash"] < POSITION_SIZE:
         return (
             "hylatty",
-            f"kateinen {tila['kateinen']:.2f} < POSITION_SIZE {POSITION_SIZE}",
+            f"kateinen {state['cash']:.2f} < POSITION_SIZE {POSITION_SIZE}",
         )
 
-    perustelu = (
-        f"risk_reward_pisteet {rr} >= RR_THRESHOLD {RR_THRESHOLD}; {hintaehto_teksti}; "
-        f"tilaa {tila['aktiivisia']}/{MAX_POSITIONS} positiota, "
-        f"kateista {tila['kateinen']:.2f} USD"
+    rationale = (
+        f"risk_reward_pisteet {rr} >= RR_THRESHOLD {RR_THRESHOLD}; "
+        f"{price_condition_text}; "
+        f"tilaa {state['active_count']}/{MAX_POSITIONS} positiota, "
+        f"kateista {state['cash']:.2f} USD"
     )
-    return "osta", perustelu
+    return "osta", rationale
 
 
-def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.DEFAULT_DB_PATH) -> str:
-    if ajotyyppi != "normaali":
-        viesti = (
-            f"ajotyyppi '{ajotyyppi}': pito/myynti-logiikkaa ei ole viela toteutettu "
+def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    if run_type != "normaali":
+        message = (
+            f"ajotyyppi '{run_type}': pito/myynti-logiikkaa ei ole viela toteutettu "
             f"(vaihe 3b)"
         )
-        _loki.info(viesti)
-        return viesti
+        _loki.info(message)
+        return message
 
-    pisteytykset = tietokanta.get_scores(ajo_id, db_path=polku)
-    if not pisteytykset:
-        yhteenveto = "0 pisteytysta, 0 paatosta"
-        _loki.info(f"Ajo {ajo_id} ({ajotyyppi}): {yhteenveto}")
-        return yhteenveto
+    scores = tietokanta.get_scores(run_id, db_path=db_path)
+    if not scores:
+        summary = "0 pisteytysta, 0 paatosta"
+        _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
+        return summary
 
-    ehdokasrivit = tietokanta.get_candidates(ajo_id, advanced_only=False, db_path=polku)
-    ehdokkaat: dict = {}
-    for rivi in ehdokasrivit:
-        if rivi["symbol"] not in ehdokkaat:
-            ehdokkaat[rivi["symbol"]] = rivi
+    candidate_rows = tietokanta.get_candidates(
+        run_id, advanced_only=False, db_path=db_path
+    )
+    candidates: dict = {}
+    for row in candidate_rows:
+        if row["symbol"] not in candidates:
+            candidates[row["symbol"]] = row
 
-    aktiiviset = tietokanta.get_open_positions(db_path=polku)
-    kateinen = tietokanta.get_cash(db_path=polku)
+    open_positions = tietokanta.get_open_positions(db_path=db_path)
+    cash = tietokanta.get_cash(db_path=db_path)
 
     # Salkkutason pysaytin ennen silmukkaa. Huom: mittari huomioi vain
     # toteutuneet tappiot (kateinen + avointen positioiden panokset), koska
     # avointen positioiden nykyhintoja ei ole saatavilla ilman API-kutsuja.
-    toteutunut_salkun_arvo = kateinen + sum(p["stake_usd"] for p in aktiiviset)
-    if toteutunut_salkun_arvo < PORTFOLIO_STOP_LEVEL * INITIAL_CAPITAL:
-        perustelu = (
-            f"salkkutason pysaytin: toteutunut arvo {toteutunut_salkun_arvo:.2f} USD < "
+    realized_portfolio_value = cash + sum(p["stake_usd"] for p in open_positions)
+    if realized_portfolio_value < PORTFOLIO_STOP_LEVEL * INITIAL_CAPITAL:
+        rationale = (
+            f"salkkutason pysaytin: toteutunut arvo "
+            f"{realized_portfolio_value:.2f} USD < "
             f"PORTFOLIO_STOP_LEVEL {PORTFOLIO_STOP_LEVEL} * INITIAL_CAPITAL "
             f"{INITIAL_CAPITAL} = "
             f"{PORTFOLIO_STOP_LEVEL * INITIAL_CAPITAL:.2f} USD - ei osteta"
         )
-        _loki.warning(f"Ajo {ajo_id}: {perustelu}")
+        _loki.warning(f"Ajo {run_id}: {rationale}")
 
-        for pisteytys in pisteytykset:
+        for score in scores:
             tietokanta.insert_decision(
-                run_id=ajo_id,
-                run_type=ajotyyppi,
-                symbol=pisteytys["symbol"],
+                run_id=run_id,
+                run_type=run_type,
+                symbol=score["symbol"],
                 decision="hylatty",
-                rationale=perustelu,
-                db_path=polku,
+                rationale=rationale,
+                db_path=db_path,
             )
 
-        yhteenveto = f"{len(pisteytykset)} paatosta, 0 ostoa (salkun stop-taso)"
-        _loki.info(f"Ajo {ajo_id} ({ajotyyppi}): {yhteenveto}")
-        return yhteenveto
+        summary = f"{len(scores)} paatosta, 0 ostoa (salkun stop-taso)"
+        _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
+        return summary
 
-    def _jarjestysavain(pisteytys: dict):
-        symboli = pisteytys["symbol"]
-        ehdokas = ehdokkaat.get(symboli)
-        if ehdokas is None or ehdokas.get("score") is None:
-            ehdokkaan_pisteet = -1
+    def _sort_key(score: dict):
+        symbol = score["symbol"]
+        candidate = candidates.get(symbol)
+        if candidate is None or candidate.get("score") is None:
+            candidate_score = -1
         else:
-            ehdokkaan_pisteet = ehdokas["score"]
-        return (-pisteytys["risk_reward_score"], -ehdokkaan_pisteet, symboli)
+            candidate_score = candidate["score"]
+        return (-score["risk_reward_score"], -candidate_score, symbol)
 
-    pisteytykset_jarjestettyna = sorted(pisteytykset, key=_jarjestysavain)
+    sorted_scores = sorted(scores, key=_sort_key)
 
-    tila = {
-        "aktiivisia": len(aktiiviset),
-        "kateinen": kateinen,
-        "aktiiviset_symbolit": {p["symbol"] for p in aktiiviset},
+    state = {
+        "active_count": len(open_positions),
+        "cash": cash,
+        "active_symbols": {p["symbol"] for p in open_positions},
     }
 
-    ostoja = 0
-    hylattyja = 0
-    viiteostohinta_puuttuu = 0
+    purchases = 0
+    rejected = 0
+    missing_reference_price = 0
 
-    for pisteytys in pisteytykset_jarjestettyna:
-        symboli = pisteytys["symbol"]
-        ehdokas = ehdokkaat.get(symboli)
-        if ehdokas is None or ehdokas.get("reference_price") is None:
-            viiteostohinta_puuttuu += 1
+    for score in sorted_scores:
+        symbol = score["symbol"]
+        candidate = candidates.get(symbol)
+        if candidate is None or candidate.get("reference_price") is None:
+            missing_reference_price += 1
 
-        paatos, perustelu = paata_osto(pisteytys, ehdokas, tila)
+        decision, rationale = decide_buy(score, candidate, state)
 
         tietokanta.insert_decision(
-            run_id=ajo_id,
-            run_type=ajotyyppi,
-            symbol=symboli,
-            decision=paatos,
-            rationale=perustelu,
-            db_path=polku,
+            run_id=run_id,
+            run_type=run_type,
+            symbol=symbol,
+            decision=decision,
+            rationale=rationale,
+            db_path=db_path,
         )
 
-        if paatos == "osta":
+        if decision == "osta":
             tietokanta.open_position(
-                symbol=symboli,
-                buy_price=pisteytys["price"],
+                symbol=symbol,
+                buy_price=score["price"],
                 stake_usd=POSITION_SIZE,
-                buy_run_id=ajo_id,
-                db_path=polku,
+                buy_run_id=run_id,
+                db_path=db_path,
             )
-            tila["aktiivisia"] += 1
-            tila["kateinen"] -= POSITION_SIZE
-            tila["aktiiviset_symbolit"].add(symboli)
-            ostoja += 1
+            state["active_count"] += 1
+            state["cash"] -= POSITION_SIZE
+            state["active_symbols"].add(symbol)
+            purchases += 1
         else:
-            hylattyja += 1
+            rejected += 1
 
-    yhteenveto = (
-        f"{len(pisteytykset_jarjestettyna)} paatosta, {ostoja} ostoa, "
-        f"{hylattyja} hylattya, {viiteostohinta_puuttuu} ilman viiteostohintaa"
+    summary = (
+        f"{len(sorted_scores)} paatosta, {purchases} ostoa, "
+        f"{rejected} hylattya, {missing_reference_price} ilman viiteostohintaa"
     )
-    _loki.info(f"Ajo {ajo_id} ({ajotyyppi}): {yhteenveto}")
-    return yhteenveto
+    _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
+    return summary
+
+
+def aja(ajo_id, ajotyyppi, polku=tietokanta.DEFAULT_DB_PATH) -> str:
+    # Valiaikainen taaksepainyhteensopiva ohitus - orkestroija kutsuu
+    # toistaiseksi kaikkia agentteja nimella aja(polku=...), koska agentit
+    # nimetaan uudelleen yksi kerrallaan (vaihe R, askel 3). Poistetaan kun
+    # viimeinenkin agentti on nimetty ja orkestroija kutsuu run():ia suoraan.
+    return run(ajo_id, ajotyyppi, db_path=polku)

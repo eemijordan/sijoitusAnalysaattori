@@ -7,139 +7,139 @@ from core import tietokanta
 from core.asetukset import MAX_POSITIONS, POSITION_SIZE, RR_THRESHOLD
 
 
-def _pisteytys(symboli="AAPL", risk_reward_pisteet=8.0, hinta=100.0):
+def _score(symbol="AAPL", risk_reward_score=8.0, price=100.0):
     return {
-        "symbol": symboli,
-        "risk_reward_score": risk_reward_pisteet,
-        "price": hinta,
+        "symbol": symbol,
+        "risk_reward_score": risk_reward_score,
+        "price": price,
     }
 
 
-def _ehdokas(viiteostohinta=100.0, pisteet=5.0):
-    return {"reference_price": viiteostohinta, "score": pisteet}
+def _candidate(reference_price=100.0, score=5.0):
+    return {"reference_price": reference_price, "score": score}
 
 
-def _tila(aktiivisia=0, kateinen=10000.0, aktiiviset_symbolit=None):
+def _state(active_count=0, cash=10000.0, active_symbols=None):
     return {
-        "aktiivisia": aktiivisia,
-        "kateinen": kateinen,
-        "aktiiviset_symbolit": aktiiviset_symbolit or set(),
+        "active_count": active_count,
+        "cash": cash,
+        "active_symbols": active_symbols or set(),
     }
 
 
-# --- paata_osto(): puhdas logiikka, ei tietokantaa eika verkkoa ---
+# --- decide_buy(): puhdas logiikka, ei tietokantaa eika verkkoa ---
 
 
 def test_hinta_puuttuu_hylkaa():
-    paatos, perustelu = paatoksentekija.paata_osto(
-        _pisteytys(hinta=None), _ehdokas(), _tila()
+    decision, rationale = paatoksentekija.decide_buy(
+        _score(price=None), _candidate(), _state()
     )
 
-    assert paatos == "hylatty"
-    assert "hinta" in perustelu
+    assert decision == "hylatty"
+    assert "hinta" in rationale
 
 
 def test_duplikaatti_hylkaa():
-    pisteytys = _pisteytys(symboli="AAPL")
-    tila = _tila(aktiiviset_symbolit={"AAPL"})
+    score = _score(symbol="AAPL")
+    state = _state(active_symbols={"AAPL"})
 
-    paatos, perustelu = paatoksentekija.paata_osto(pisteytys, _ehdokas(), tila)
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
 
-    assert paatos == "hylatty"
-    assert "AAPL" in perustelu
+    assert decision == "hylatty"
+    assert "AAPL" in rationale
 
 
 def test_rr_alle_kynnyksen_hylkaa():
-    pisteytys = _pisteytys(risk_reward_pisteet=RR_THRESHOLD - 1)
+    score = _score(risk_reward_score=RR_THRESHOLD - 1)
 
-    paatos, perustelu = paatoksentekija.paata_osto(pisteytys, _ehdokas(), _tila())
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), _state())
 
-    assert paatos == "hylatty"
-    assert "risk_reward_pisteet" in perustelu
-    assert "RR_THRESHOLD" in perustelu
+    assert decision == "hylatty"
+    assert "risk_reward_pisteet" in rationale
+    assert "RR_THRESHOLD" in rationale
 
 
 def test_hinta_yli_viiteostohinnan_hylkaa():
-    pisteytys = _pisteytys(hinta=108.0)
-    ehdokas = _ehdokas(viiteostohinta=100.0)
+    score = _score(price=108.0)
+    candidate = _candidate(reference_price=100.0)
 
-    paatos, perustelu = paatoksentekija.paata_osto(pisteytys, ehdokas, _tila())
+    decision, rationale = paatoksentekija.decide_buy(score, candidate, _state())
 
-    assert paatos == "hylatty"
-    assert "yli" in perustelu
+    assert decision == "hylatty"
+    assert "yli" in rationale
 
 
 def test_hinta_alle_viiteostohinnan_hylkaa_eri_tekstilla():
-    ehdokas = _ehdokas(viiteostohinta=100.0)
+    candidate = _candidate(reference_price=100.0)
 
-    _, perustelu_alle = paatoksentekija.paata_osto(
-        _pisteytys(hinta=92.0), ehdokas, _tila()
+    _, rationale_alle = paatoksentekija.decide_buy(
+        _score(price=92.0), candidate, _state()
     )
-    _, perustelu_yli = paatoksentekija.paata_osto(
-        _pisteytys(hinta=108.0), ehdokas, _tila()
+    _, rationale_yli = paatoksentekija.decide_buy(
+        _score(price=108.0), candidate, _state()
     )
 
-    assert "alle" in perustelu_alle
-    assert "yli" in perustelu_yli
-    assert perustelu_alle != perustelu_yli
+    assert "alle" in rationale_alle
+    assert "yli" in rationale_yli
+    assert rationale_alle != rationale_yli
 
 
 def test_hinta_pienen_poikkeaman_sisalla_paasee_lapi():
-    pisteytys = _pisteytys(hinta=103.0)
-    ehdokas = _ehdokas(viiteostohinta=100.0)
+    score = _score(price=103.0)
+    candidate = _candidate(reference_price=100.0)
 
-    paatos, _ = paatoksentekija.paata_osto(pisteytys, ehdokas, _tila())
+    decision, _ = paatoksentekija.decide_buy(score, candidate, _state())
 
-    assert paatos == "osta"
+    assert decision == "osta"
 
 
 def test_puuttuva_viiteostohinta_ohittaa_ehdon():
-    pisteytys = _pisteytys()
-    ehdokas = _ehdokas(viiteostohinta=None)
+    score = _score()
+    candidate = _candidate(reference_price=None)
 
-    paatos, perustelu = paatoksentekija.paata_osto(pisteytys, ehdokas, _tila())
+    decision, rationale = paatoksentekija.decide_buy(score, candidate, _state())
 
-    assert paatos == "osta"
-    assert "ohitettu" in perustelu
+    assert decision == "osta"
+    assert "ohitettu" in rationale
 
     # sama patee jos ehdokasta ei loydy lainkaan
-    paatos_ei_ehdokasta, perustelu_ei_ehdokasta = paatoksentekija.paata_osto(
-        pisteytys, None, _tila()
+    decision_no_candidate, rationale_no_candidate = paatoksentekija.decide_buy(
+        score, None, _state()
     )
-    assert paatos_ei_ehdokasta == "osta"
-    assert "ohitettu" in perustelu_ei_ehdokasta
+    assert decision_no_candidate == "osta"
+    assert "ohitettu" in rationale_no_candidate
 
 
 def test_kapasiteetti_tayonna_hylkaa():
-    tila = _tila(aktiivisia=MAX_POSITIONS)
+    state = _state(active_count=MAX_POSITIONS)
 
-    paatos, perustelu = paatoksentekija.paata_osto(_pisteytys(), _ehdokas(), tila)
+    decision, rationale = paatoksentekija.decide_buy(_score(), _candidate(), state)
 
-    assert paatos == "hylatty"
-    assert "MAX_POSITIONS" in perustelu
+    assert decision == "hylatty"
+    assert "MAX_POSITIONS" in rationale
 
 
 def test_liian_vahan_kateista_hylkaa():
-    tila = _tila(kateinen=POSITION_SIZE - 1)
+    state = _state(cash=POSITION_SIZE - 1)
 
-    paatos, perustelu = paatoksentekija.paata_osto(_pisteytys(), _ehdokas(), tila)
+    decision, rationale = paatoksentekija.decide_buy(_score(), _candidate(), state)
 
-    assert paatos == "hylatty"
-    assert "POSITION_SIZE" in perustelu
+    assert decision == "hylatty"
+    assert "POSITION_SIZE" in rationale
 
 
 def test_rr_tarkistetaan_ennen_kapasiteettia():
-    pisteytys = _pisteytys(risk_reward_pisteet=RR_THRESHOLD - 1)
-    tila = _tila(aktiivisia=MAX_POSITIONS)
+    score = _score(risk_reward_score=RR_THRESHOLD - 1)
+    state = _state(active_count=MAX_POSITIONS)
 
-    paatos, perustelu = paatoksentekija.paata_osto(pisteytys, _ehdokas(), tila)
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
 
-    assert paatos == "hylatty"
-    assert "RR_THRESHOLD" in perustelu
-    assert "MAX_POSITIONS" not in perustelu
+    assert decision == "hylatty"
+    assert "RR_THRESHOLD" in rationale
+    assert "MAX_POSITIONS" not in rationale
 
 
-# --- aja(): tietokannan kanssa, lahtodata kirjoitettu suoraan kantaan ---
+# --- run(): tietokannan kanssa, lahtodata kirjoitettu suoraan kantaan ---
 
 
 def test_aja_kapasiteetti_rajoittaa_ostot(tmp_path):
@@ -155,25 +155,25 @@ def test_aja_kapasiteetti_rajoittaa_ostot(tmp_path):
             db_path=polku,
         )
 
-    for symboli in ("AAA", "BBB", "CCC"):
+    for symbol in ("AAA", "BBB", "CCC"):
         tietokanta.insert_score(
             run_id="ajo1",
             run_type="normaali",
-            symbol=symboli,
+            symbol=symbol,
             risk_reward_score=8.0,
             price=50.0,
             db_path=polku,
         )
 
-    paatoksentekija.aja("ajo1", "normaali", polku=polku)
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
 
-    paatokset = tietokanta.get_decisions("ajo1", db_path=polku)
-    ostot = [p for p in paatokset if p["decision"] == "osta"]
-    hylatyt = [p for p in paatokset if p["decision"] == "hylatty"]
+    decisions = tietokanta.get_decisions("ajo1", db_path=polku)
+    ostot = [d for d in decisions if d["decision"] == "osta"]
+    hylatyt = [d for d in decisions if d["decision"] == "hylatty"]
 
     assert len(ostot) == 1
     assert len(hylatyt) == 2
-    assert all("MAX_POSITIONS" in p["rationale"] for p in hylatyt)
+    assert all("MAX_POSITIONS" in d["rationale"] for d in hylatyt)
 
 
 def test_aja_kateinen_rajoittaa_ostot(tmp_path):
@@ -192,20 +192,20 @@ def test_aja_kateinen_rajoittaa_ostot(tmp_path):
     )
     assert tietokanta.get_cash(db_path=polku) == 1500.0
 
-    for symboli in ("AAA", "BBB"):
+    for symbol in ("AAA", "BBB"):
         tietokanta.insert_score(
             run_id="ajo1",
             run_type="normaali",
-            symbol=symboli,
+            symbol=symbol,
             risk_reward_score=8.0,
             price=50.0,
             db_path=polku,
         )
 
-    paatoksentekija.aja("ajo1", "normaali", polku=polku)
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
 
-    paatokset = tietokanta.get_decisions("ajo1", db_path=polku)
-    ostot = [p for p in paatokset if p["decision"] == "osta"]
+    decisions = tietokanta.get_decisions("ajo1", db_path=polku)
+    ostot = [d for d in decisions if d["decision"] == "osta"]
 
     assert len(ostot) == 1
     assert tietokanta.get_cash(db_path=polku) == 500.0
@@ -226,7 +226,7 @@ def test_aja_jarjestyssaanto_rr_sitten_ehdokkaan_pisteet_sitten_aakkoset(tmp_pat
             db_path=polku,
         )
 
-    for symboli, pisteet in (
+    for symbol, score in (
         ("BETA", 10.0),
         ("ALFA", 10.0),
         ("GAMMA", 3.0),
@@ -235,37 +235,37 @@ def test_aja_jarjestyssaanto_rr_sitten_ehdokkaan_pisteet_sitten_aakkoset(tmp_pat
         tietokanta.insert_candidate(
             run_id="ajo1",
             run_type="normaali",
-            symbol=symboli,
+            symbol=symbol,
             source="analyytikko",
-            score=pisteet,
+            score=score,
             db_path=polku,
         )
 
-    for symboli, rr in (("ZETA", 9.0), ("BETA", 8.0), ("ALFA", 8.0), ("GAMMA", 8.0)):
+    for symbol, rr in (("ZETA", 9.0), ("BETA", 8.0), ("ALFA", 8.0), ("GAMMA", 8.0)):
         tietokanta.insert_score(
             run_id="ajo1",
             run_type="normaali",
-            symbol=symboli,
+            symbol=symbol,
             risk_reward_score=rr,
             price=50.0,
             db_path=polku,
         )
 
-    paatoksentekija.aja("ajo1", "normaali", polku=polku)
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
 
-    paatokset = {
-        p["symbol"]: p["decision"]
-        for p in tietokanta.get_decisions("ajo1", db_path=polku)
+    decisions = {
+        d["symbol"]: d["decision"]
+        for d in tietokanta.get_decisions("ajo1", db_path=polku)
     }
 
     # ZETA: korkein RR (9) -> ensin.
     # ALFA vs BETA: sama RR (8) ja sama ehdokkaan pisteet (10) -> aakkoset
     # ratkaisevat, ALFA ennen BETAa.
     # GAMMA: sama RR (8) mutta matalin ehdokkaan pisteet (3) -> viimeinen.
-    assert paatokset["ZETA"] == "osta"
-    assert paatokset["ALFA"] == "osta"
-    assert paatokset["BETA"] == "hylatty"
-    assert paatokset["GAMMA"] == "hylatty"
+    assert decisions["ZETA"] == "osta"
+    assert decisions["ALFA"] == "osta"
+    assert decisions["BETA"] == "hylatty"
+    assert decisions["GAMMA"] == "hylatty"
 
 
 def test_aja_salkun_stop_taso_estaa_kaikki_ostot(tmp_path):
@@ -275,30 +275,30 @@ def test_aja_salkun_stop_taso_estaa_kaikki_ostot(tmp_path):
     nykyinen = tietokanta.get_cash(db_path=polku)
     tietokanta.adjust_cash(1000 - nykyinen, db_path=polku)
 
-    for symboli in ("AAA", "BBB"):
+    for symbol in ("AAA", "BBB"):
         tietokanta.insert_score(
             run_id="ajo1",
             run_type="normaali",
-            symbol=symboli,
+            symbol=symbol,
             risk_reward_score=9.0,
             price=50.0,
             db_path=polku,
         )
 
-    paatoksentekija.aja("ajo1", "normaali", polku=polku)
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
 
-    paatokset = tietokanta.get_decisions("ajo1", db_path=polku)
+    decisions = tietokanta.get_decisions("ajo1", db_path=polku)
 
-    assert len(paatokset) == 2
-    assert all(p["decision"] == "hylatty" for p in paatokset)
-    assert all("pysaytin" in p["rationale"] for p in paatokset)
+    assert len(decisions) == 2
+    assert all(d["decision"] == "hylatty" for d in decisions)
+    assert all("pysaytin" in d["rationale"] for d in decisions)
 
 
 def test_aja_nolla_pisteytysta_palauttaa_siististi(tmp_path):
     polku = tmp_path / "testi.db"
     tietokanta.init_database(polku)
 
-    tulos = paatoksentekija.aja("ajo_tyhja", "normaali", polku=polku)
+    tulos = paatoksentekija.run("ajo_tyhja", "normaali", db_path=polku)
 
     assert "0 pisteytysta" in tulos
     assert tietokanta.get_decisions("ajo_tyhja", db_path=polku) == []
@@ -317,7 +317,7 @@ def test_aja_tarkistus_ei_tee_paatoksia(tmp_path):
         db_path=polku,
     )
 
-    tulos = paatoksentekija.aja("ajo1", "tarkistus", polku=polku)
+    tulos = paatoksentekija.run("ajo1", "tarkistus", db_path=polku)
 
     assert tietokanta.get_decisions("ajo1", db_path=polku) == []
     assert "vaihe 3b" in tulos
@@ -328,21 +328,21 @@ def test_aja_jokaisesta_pisteytyksesta_syntyy_tasan_yksi_paatos(tmp_path):
     tietokanta.init_database(polku)
 
     symbolit = ["AAA", "BBB", "CCC", "DDD"]
-    for symboli in symbolit:
+    for symbol in symbolit:
         tietokanta.insert_score(
             run_id="ajo1",
             run_type="normaali",
-            symbol=symboli,
+            symbol=symbol,
             risk_reward_score=5.0,
             price=50.0,
             db_path=polku,
         )  # alle RR_THRESHOLD -> hylatty, mutta paatos kirjataan silti
 
-    paatoksentekija.aja("ajo1", "normaali", polku=polku)
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
 
-    paatokset = tietokanta.get_decisions("ajo1", db_path=polku)
-    assert len(paatokset) == len(symbolit)
-    assert {p["symbol"] for p in paatokset} == set(symbolit)
+    decisions = tietokanta.get_decisions("ajo1", db_path=polku)
+    assert len(decisions) == len(symbolit)
+    assert {d["symbol"] for d in decisions} == set(symbolit)
 
 
 # --- tietokanta.open_position() ---
