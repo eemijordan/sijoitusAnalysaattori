@@ -11,7 +11,7 @@ from core.asetukset import MIN_DAILY_TURNOVER, MIN_SHARE_PRICE, get_twelve_data_
 _loki = loki.get_logger(__name__)
 
 
-class KeskenerainenKurssidataVirhe(RuntimeError):
+class IncompletePriceDataError(RuntimeError):
     pass
 
 
@@ -21,405 +21,408 @@ TWELVE_DATA_BASE = "https://api.twelvedata.com"
 # Ilmaistaso: 8 krediittia minuutissa, liukuva laskuri jota myos
 # epaonnistuneet kutsut kasvattavat. Odotetaan tama joka kutsun jalkeen
 # jotta pysytaan rajan alla ilman erillista kirjanpitoa.
-TAHDISTUS_SEKUNTIA = 8
+SYNC_SECONDS = 8
 # Jos 429 tulee silti vastaan, odotetaan koko minuutti ja yritetaan samaa
 # kutsua uudelleen tasan kerran.
-RAJA_ODOTUS_SEKUNTIA = 60
+LIMIT_WAIT_SECONDS = 60
 
-KURSSIHISTORIA_PAIVIA = 252
-SMA50_JAKSO = 50
-SMA200_JAKSO = 200
+PRICE_HISTORY_DAYS = 252
+SMA50_PERIOD = 50
+SMA200_PERIOD = 200
 
 
-def _on_rajavirhe(vastaus: requests.Response, data) -> bool:
-    return vastaus.status_code == 429 or (
+def _is_rate_limit_error(response: requests.Response, data) -> bool:
+    return response.status_code == 429 or (
         isinstance(data, dict) and data.get("code") == 429
     )
 
 
-def _hae_twelvedata_json(url: str, params: dict) -> dict:
-    """Tekee GET-kutsun ja odottaa TAHDISTUS_SEKUNTIA sen jalkeen (aina, myos
-    virheen jalkeen). Jos vastaus on 429, odottaa RAJA_ODOTUS_SEKUNTIA ja
+def _fetch_twelvedata_json(url: str, params: dict) -> dict:
+    """Tekee GET-kutsun ja odottaa SYNC_SECONDS sen jalkeen (aina, myos
+    virheen jalkeen). Jos vastaus on 429, odottaa LIMIT_WAIT_SECONDS ja
     yrittaa samaa kutsua uudelleen kerran. Nostaa poikkeuksen jos toinenkin
     yritys epaonnistuu 429:aan tai jos HTTP-kutsu epaonnistuu muuten."""
-    vastaus = requests.get(url, params=params, timeout=TIMEOUT)
+    response = requests.get(url, params=params, timeout=TIMEOUT)
     try:
-        data = vastaus.json()
+        data = response.json()
     except ValueError:
         data = None
 
-    if _on_rajavirhe(vastaus, data):
+    if _is_rate_limit_error(response, data):
         _loki.warning(
-            f"Twelve Data 429 (minuuttiraja), odotetaan {RAJA_ODOTUS_SEKUNTIA}s ja "
+            f"Twelve Data 429 (minuuttiraja), odotetaan {LIMIT_WAIT_SECONDS}s ja "
             f"yritetaan uudelleen: {url}"
         )
-        time.sleep(RAJA_ODOTUS_SEKUNTIA)
+        time.sleep(LIMIT_WAIT_SECONDS)
 
-        vastaus = requests.get(url, params=params, timeout=TIMEOUT)
+        response = requests.get(url, params=params, timeout=TIMEOUT)
         try:
-            data = vastaus.json()
+            data = response.json()
         except ValueError:
             data = None
-        time.sleep(TAHDISTUS_SEKUNTIA)
+        time.sleep(SYNC_SECONDS)
 
-        if _on_rajavirhe(vastaus, data):
+        if _is_rate_limit_error(response, data):
             raise RuntimeError("Twelve Data 429-raja tuli vastaan kahdesti perakkain")
 
-        vastaus.raise_for_status()
+        response.raise_for_status()
         return data
 
-    time.sleep(TAHDISTUS_SEKUNTIA)
-    vastaus.raise_for_status()
+    time.sleep(SYNC_SECONDS)
+    response.raise_for_status()
     return data
 
 
-def onko_palkki_valmis(palkin_pvm: date, tanaan_et: date) -> tuple[bool, str]:
-    if palkin_pvm < tanaan_et:
+def is_bar_ready(bar_date: date, today_et: date) -> tuple[bool, str]:
+    if bar_date < today_et:
         return True, ""
-    syy = (
-        f"viimeisin palkki {palkin_pvm.isoformat()} on kuluva parssipaiva "
-        f"(New Yorkissa {tanaan_et.isoformat()}) - data on kesken"
+    reason = (
+        f"viimeisin palkki {bar_date.isoformat()} on kuluva parssipaiva "
+        f"(New Yorkissa {today_et.isoformat()}) - data on kesken"
     )
-    return False, syy
+    return False, reason
 
 
-def _laske_kurssitunnusluvut(paivat: list[dict]) -> dict:
+def _calculate_price_stats(bars: list[dict]) -> dict:
     # Twelve Datan time_series palauttaa paivat uusin ensin.
-    sulkuhinnat = [float(p["close"]) for p in paivat]
-    korkeimmat = [float(p["high"]) for p in paivat]
-    matalimmat = [float(p["low"]) for p in paivat]
+    close_prices = [float(p["close"]) for p in bars]
+    highs = [float(p["high"]) for p in bars]
+    lows = [float(p["low"]) for p in bars]
     # Paivavaihto dollareissa = volyymi * paatoskurssi. Tama on korvike
     # markkina-arvolle, jota ei ole saatavilla ilmaistasolla.
-    paivavaihdot_usd = [
+    daily_turnovers_usd = [
         float(p["volume"]) * float(p["close"])
-        for p in paivat
+        for p in bars
         if p.get("volume") not in (None, "")
     ]
 
     sma50 = (
-        sum(sulkuhinnat[:SMA50_JAKSO]) / SMA50_JAKSO
-        if len(sulkuhinnat) >= SMA50_JAKSO
+        sum(close_prices[:SMA50_PERIOD]) / SMA50_PERIOD
+        if len(close_prices) >= SMA50_PERIOD
         else None
     )
     sma200 = (
-        sum(sulkuhinnat[:SMA200_JAKSO]) / SMA200_JAKSO
-        if len(sulkuhinnat) >= SMA200_JAKSO
+        sum(close_prices[:SMA200_PERIOD]) / SMA200_PERIOD
+        if len(close_prices) >= SMA200_PERIOD
         else None
     )
 
     return {
-        "nykyhinta": sulkuhinnat[0],
+        "current_price": close_prices[0],
         "sma50": sma50,
         "sma200": sma200,
-        "ylin_52vk": max(korkeimmat),
-        "alin_52vk": min(matalimmat),
-        "keskimaarainen_paivavaihto_usd": (
-            sum(paivavaihdot_usd) / len(paivavaihdot_usd) if paivavaihdot_usd else None
+        "high_52w": max(highs),
+        "low_52w": min(lows),
+        "avg_daily_turnover_usd": (
+            sum(daily_turnovers_usd) / len(daily_turnovers_usd)
+            if daily_turnovers_usd
+            else None
         ),
-        "historia_paivia": len(sulkuhinnat),
-        "viimeisin_palkki": paivat[0].get("datetime"),
+        "history_days": len(close_prices),
+        "latest_bar": bars[0].get("datetime"),
     }
 
 
-def hae_kurssidata(symboli: str) -> dict | None:
+def fetch_price_data(symbol: str) -> dict | None:
     apikey = get_twelve_data_key()
-    data = _hae_twelvedata_json(
+    data = _fetch_twelvedata_json(
         f"{TWELVE_DATA_BASE}/time_series",
         {
-            "symbol": symboli,
+            "symbol": symbol,
             "interval": "1day",
-            "outputsize": KURSSIHISTORIA_PAIVIA,
+            "outputsize": PRICE_HISTORY_DAYS,
             "apikey": apikey,
         },
     )
 
-    paivat = data.get("values") if isinstance(data, dict) else None
-    if not isinstance(paivat, list) or not paivat:
+    bars = data.get("values") if isinstance(data, dict) else None
+    if not isinstance(bars, list) or not bars:
         return None
 
     # Twelve Data palauttaa paivat uusin ensin ilman end_date-parametria.
-    # Porssin ollessa auki paivat[0] on kesken oleva paivan palkki: sen
+    # Porssin ollessa auki bars[0] on kesken oleva paivan palkki: sen
     # close, high, low ja volume eivat viela ole lopullisia, ja koko
     # indikaattorisarja laskettaisiin vajaasta datasta. Siksi uusimman
     # palkin on oltava aidosti aikaisempi kuin kuluva paiva New Yorkissa.
-    palkin_pvm_str = paivat[0].get("datetime")
-    palkin_pvm = None
-    if isinstance(palkin_pvm_str, str):
+    bar_date_str = bars[0].get("datetime")
+    bar_date = None
+    if isinstance(bar_date_str, str):
         try:
-            palkin_pvm = date.fromisoformat(palkin_pvm_str[:10])
+            bar_date = date.fromisoformat(bar_date_str[:10])
         except ValueError:
-            palkin_pvm = None
+            bar_date = None
 
-    if palkin_pvm is None:
-        raise KeskenerainenKurssidataVirhe(
-            f"{symboli}: viimeisimman palkin datetime-kentta puuttuu tai ei "
-            f"jasenny ({palkin_pvm_str!r})"
+    if bar_date is None:
+        raise IncompletePriceDataError(
+            f"{symbol}: viimeisimman palkin datetime-kentta puuttuu tai ei "
+            f"jasenny ({bar_date_str!r})"
         )
 
-    tanaan_et = datetime.now(ZoneInfo("America/New_York")).date()
-    valmis, syy = onko_palkki_valmis(palkin_pvm, tanaan_et)
-    if not valmis:
-        _loki.error(f"{symboli}: {syy}")
-        raise KeskenerainenKurssidataVirhe(f"{symboli}: {syy}")
+    today_et = datetime.now(ZoneInfo("America/New_York")).date()
+    ready, reason = is_bar_ready(bar_date, today_et)
+    if not ready:
+        _loki.error(f"{symbol}: {reason}")
+        raise IncompletePriceDataError(f"{symbol}: {reason}")
 
-    return _laske_kurssitunnusluvut(paivat)
+    return _calculate_price_stats(bars)
 
 
-def _pura_indikaattoriarvo(data: dict, avain: str) -> float | None:
+def _extract_indicator_value(data: dict, key: str) -> float | None:
     if not isinstance(data, dict):
         return None
-    arvot = data.get("values")
-    if not isinstance(arvot, list) or not arvot:
+    values = data.get("values")
+    if not isinstance(values, list) or not values:
         return None
     try:
-        return float(arvot[0].get(avain))
+        return float(values[0].get(key))
     except (TypeError, ValueError):
         return None
 
 
-def hae_atr(symboli: str) -> float | None:
+def fetch_atr(symbol: str) -> float | None:
     apikey = get_twelve_data_key()
-    data = _hae_twelvedata_json(
+    data = _fetch_twelvedata_json(
         f"{TWELVE_DATA_BASE}/atr",
-        {"symbol": symboli, "interval": "1day", "outputsize": 1, "apikey": apikey},
+        {"symbol": symbol, "interval": "1day", "outputsize": 1, "apikey": apikey},
     )
-    return _pura_indikaattoriarvo(data, "atr")
+    return _extract_indicator_value(data, "atr")
 
 
-def hae_rsi(symboli: str) -> float | None:
+def fetch_rsi(symbol: str) -> float | None:
     apikey = get_twelve_data_key()
-    data = _hae_twelvedata_json(
+    data = _fetch_twelvedata_json(
         f"{TWELVE_DATA_BASE}/rsi",
-        {"symbol": symboli, "interval": "1day", "outputsize": 1, "apikey": apikey},
+        {"symbol": symbol, "interval": "1day", "outputsize": 1, "apikey": apikey},
     )
-    return _pura_indikaattoriarvo(data, "rsi")
+    return _extract_indicator_value(data, "rsi")
 
 
-def _muodosta_perustelu(
+def _build_rationale(
     atr_pct,
-    riski_pisteet,
+    risk_score,
     sma50,
     sma200,
-    nykyhinta,
-    trendi_pisteet,
-    historia_paivia,
-    asema_pct,
-    asema_pisteet,
+    current_price,
+    trend_score,
+    history_days,
+    position_pct,
+    position_score,
     rsi,
-    rsi_pisteet,
-    pisteet,
+    rsi_score,
+    score,
 ) -> str:
     if atr_pct is not None:
-        atr_teksti = f"ATR {atr_pct:.1f} % ({riski_pisteet} p)".replace(".", ",")
+        atr_text = f"ATR {atr_pct:.1f} % ({risk_score} p)".replace(".", ",")
     else:
-        atr_teksti = f"ATR puuttuu ({riski_pisteet} p)"
+        atr_text = f"ATR puuttuu ({risk_score} p)"
 
     if sma50 is None:
-        trendi_teksti = (
-            f"SMA50 ei laskettavissa (vain {historia_paivia} paivaa historiaa) (0 p)"
+        trend_text = (
+            f"SMA50 ei laskettavissa (vain {history_days} paivaa historiaa) (0 p)"
         )
     elif sma200 is None:
-        suunta = "yli SMA50" if nykyhinta > sma50 else "alle SMA50"
-        trendi_teksti = (
-            f"{suunta}, SMA200 ei laskettavissa (vain {historia_paivia} paivaa "
-            f"historiaa) ({trendi_pisteet} p)"
+        direction = "yli SMA50" if current_price > sma50 else "alle SMA50"
+        trend_text = (
+            f"{direction}, SMA200 ei laskettavissa (vain {history_days} paivaa "
+            f"historiaa) ({trend_score} p)"
         )
-    elif nykyhinta > sma50 and sma50 > sma200:
-        trendi_teksti = f"yli SMA50 ja SMA200 ({trendi_pisteet} p)"
+    elif current_price > sma50 and sma50 > sma200:
+        trend_text = f"yli SMA50 ja SMA200 ({trend_score} p)"
     else:
-        hinta_vs_sma50 = "yli SMA50" if nykyhinta > sma50 else "alle SMA50"
+        price_vs_sma50 = "yli SMA50" if current_price > sma50 else "alle SMA50"
         sma50_vs_sma200 = "yli SMA200" if sma50 > sma200 else "alle SMA200"
-        trendi_teksti = (
-            f"hinta {hinta_vs_sma50}, SMA50 {sma50_vs_sma200} ({trendi_pisteet} p)"
+        trend_text = (
+            f"hinta {price_vs_sma50}, SMA50 {sma50_vs_sma200} ({trend_score} p)"
         )
 
-    if asema_pct is not None:
-        asema_teksti = f"{asema_pct:.0f} % vaihteluvalista ({asema_pisteet} p)"
+    if position_pct is not None:
+        position_text = f"{position_pct:.0f} % vaihteluvalista ({position_score} p)"
     else:
-        asema_teksti = f"52 viikon vaihteluvali ei laskettavissa ({asema_pisteet} p)"
+        position_text = f"52 viikon vaihteluvali ei laskettavissa ({position_score} p)"
 
     if rsi is not None:
-        rsi_teksti = f"RSI {rsi:.0f} ({rsi_pisteet} p)"
+        rsi_text = f"RSI {rsi:.0f} ({rsi_score} p)"
     else:
-        rsi_teksti = f"RSI puuttuu ({rsi_pisteet} p)"
+        rsi_text = f"RSI puuttuu ({rsi_score} p)"
 
-    pisteet_teksti = f"{pisteet:g}".replace(".", ",")
-    return (
-        f"{atr_teksti}, {trendi_teksti}, {asema_teksti}, "
-        f"{rsi_teksti} = {pisteet_teksti}"
-    )
+    score_text = f"{score:g}".replace(".", ",")
+    return f"{atr_text}, {trend_text}, {position_text}, {rsi_text} = {score_text}"
 
 
-def laske_pisteet(
-    kurssidata: dict, atr: float | None, rsi: float | None
+def calculate_score(
+    price_data: dict, atr: float | None, rsi: float | None
 ) -> tuple[float, dict, str]:
-    nykyhinta = kurssidata["nykyhinta"]
-    sma50 = kurssidata.get("sma50")
-    sma200 = kurssidata.get("sma200")
-    ylin_52vk = kurssidata.get("ylin_52vk")
-    alin_52vk = kurssidata.get("alin_52vk")
-    historia_paivia = kurssidata.get("historia_paivia")
+    current_price = price_data["current_price"]
+    sma50 = price_data.get("sma50")
+    sma200 = price_data.get("sma200")
+    high_52w = price_data.get("high_52w")
+    low_52w = price_data.get("low_52w")
+    history_days = price_data.get("history_days")
 
     # RISKI: ATR suhteessa nykyhintaan.
-    if atr is not None and nykyhinta > 0:
-        atr_pct = atr / nykyhinta * 100
+    if atr is not None and current_price > 0:
+        atr_pct = atr / current_price * 100
         if atr_pct < 2:
-            riski_pisteet = 3
+            risk_score = 3
         elif atr_pct < 4:
-            riski_pisteet = 2
+            risk_score = 2
         elif atr_pct < 6:
-            riski_pisteet = 1
+            risk_score = 1
         else:
-            riski_pisteet = 0
+            risk_score = 0
     else:
         atr_pct = None
-        riski_pisteet = 0
+        risk_score = 0
 
     # TRENDI: hinta > SMA50 (+2), SMA50 > SMA200 (+2). Puuttuva SMA200 -
     # yleensa alle 200 pv historiaa - jattaa vain jalkimmaisen osan pois,
     # ei olettaa sita nollaksi aanettomasti (nakyy perustelussa).
-    trendi_pisteet = 0
-    if sma50 is not None and nykyhinta > sma50:
-        trendi_pisteet += 2
+    trend_score = 0
+    if sma50 is not None and current_price > sma50:
+        trend_score += 2
     if sma50 is not None and sma200 is not None and sma50 > sma200:
-        trendi_pisteet += 2
+        trend_score += 2
 
     # ASEMA 52 viikon vaihteluvalissa.
-    if ylin_52vk is not None and alin_52vk is not None and ylin_52vk > alin_52vk:
-        asema_pct = (nykyhinta - alin_52vk) / (ylin_52vk - alin_52vk) * 100
-        if 40 <= asema_pct <= 85:
-            asema_pisteet = 2
-        elif asema_pct > 85:
-            asema_pisteet = 1  # venynyt
+    if high_52w is not None and low_52w is not None and high_52w > low_52w:
+        position_pct = (current_price - low_52w) / (high_52w - low_52w) * 100
+        if 40 <= position_pct <= 85:
+            position_score = 2
+        elif position_pct > 85:
+            position_score = 1  # venynyt
         else:
-            asema_pisteet = 0
+            position_score = 0
     else:
-        asema_pct = None
-        asema_pisteet = 0
+        position_pct = None
+        position_score = 0
 
     # MOMENTTI (RSI).
     if rsi is not None:
         if 40 <= rsi <= 65:
-            rsi_pisteet = 1
+            rsi_score = 1
         elif rsi > 75:
-            rsi_pisteet = -2
+            rsi_score = -2
         elif rsi < 30:
-            rsi_pisteet = -1
+            rsi_score = -1
         else:
-            rsi_pisteet = 0
+            rsi_score = 0
     else:
-        rsi_pisteet = 0
+        rsi_score = 0
 
-    pisteet_ennen_rajausta = (
-        riski_pisteet + trendi_pisteet + asema_pisteet + rsi_pisteet
-    )
-    pisteet = max(0, min(10, pisteet_ennen_rajausta))
+    score_before_clamp = risk_score + trend_score + position_score + rsi_score
+    score = max(0, min(10, score_before_clamp))
 
-    indikaattorit = {
-        "nykyhinta": nykyhinta,
+    indicators = {
+        "current_price": current_price,
         "atr": atr,
         "atr_pct": atr_pct,
-        "riski_pisteet": riski_pisteet,
+        "risk_score": risk_score,
         "sma50": sma50,
         "sma200": sma200,
-        "trendi_pisteet": trendi_pisteet,
-        "ylin_52vk": ylin_52vk,
-        "alin_52vk": alin_52vk,
-        "asema_pct": asema_pct,
-        "asema_pisteet": asema_pisteet,
+        "trend_score": trend_score,
+        "high_52w": high_52w,
+        "low_52w": low_52w,
+        "position_pct": position_pct,
+        "position_score": position_score,
         "rsi": rsi,
-        "rsi_pisteet": rsi_pisteet,
-        "historia_paivia": historia_paivia,
-        "keskimaarainen_paivavaihto_usd": kurssidata.get(
-            "keskimaarainen_paivavaihto_usd"
-        ),
-        "viimeisin_palkki": kurssidata.get("viimeisin_palkki"),
-        "pisteet_ennen_rajausta": pisteet_ennen_rajausta,
+        "rsi_score": rsi_score,
+        "history_days": history_days,
+        "avg_daily_turnover_usd": price_data.get("avg_daily_turnover_usd"),
+        "latest_bar": price_data.get("latest_bar"),
+        "score_before_clamp": score_before_clamp,
     }
 
-    perustelu = _muodosta_perustelu(
+    rationale = _build_rationale(
         atr_pct,
-        riski_pisteet,
+        risk_score,
         sma50,
         sma200,
-        nykyhinta,
-        trendi_pisteet,
-        historia_paivia,
-        asema_pct,
-        asema_pisteet,
+        current_price,
+        trend_score,
+        history_days,
+        position_pct,
+        position_score,
         rsi,
-        rsi_pisteet,
-        pisteet,
+        rsi_score,
+        score,
     )
 
-    return pisteet, indikaattorit, perustelu
+    return score, indicators, rationale
 
 
-def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.DEFAULT_DB_PATH) -> str:
+def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     # Normaali- ja tarkistusajo lukevat molemmat jatkoon=1-rivit samalla
     # tavalla - Agentti 1 on jo kirjoittanut aktiiviset positiot naiksi
     # tarkistusajossa, joten sama haara riittaa.
-    ehdokkaat = tietokanta.get_candidates(ajo_id, advanced_only=True, db_path=polku)
+    candidates = tietokanta.get_candidates(run_id, advanced_only=True, db_path=db_path)
 
-    kirjattu = 0
-    ensimmainen_lokitettu = False
-    for ehdokas in ehdokkaat:
-        symboli = ehdokas["symbol"]
+    recorded = 0
+    first_logged = False
+    for candidate in candidates:
+        symbol = candidate["symbol"]
         try:
-            kurssidata = hae_kurssidata(symboli)
-            if kurssidata is None:
-                _loki.warning(f"{symboli}: time_series ei palauttanut dataa, ohitetaan")
+            price_data = fetch_price_data(symbol)
+            if price_data is None:
+                _loki.warning(f"{symbol}: time_series ei palauttanut dataa, ohitetaan")
                 continue
 
-            if not ensimmainen_lokitettu:
+            if not first_logged:
                 _loki.info(
-                    f"Ajo {ajo_id}: viimeisin palkki ({symboli}) = "
-                    f"{kurssidata.get('viimeisin_palkki')}"
+                    f"Ajo {run_id}: viimeisin palkki ({symbol}) = "
+                    f"{price_data.get('latest_bar')}"
                 )
-                ensimmainen_lokitettu = True
+                first_logged = True
 
-            nykyhinta = kurssidata["nykyhinta"]
-            if nykyhinta < MIN_SHARE_PRICE:
+            current_price = price_data["current_price"]
+            if current_price < MIN_SHARE_PRICE:
                 _loki.info(
-                    f"{symboli}: MIN_SHARE_PRICE-raja hylkasi (hinta {nykyhinta} USD "
-                    f"< {MIN_SHARE_PRICE} USD), ohitetaan"
+                    f"{symbol}: MIN_SHARE_PRICE-raja hylkasi (hinta {current_price} "
+                    f"USD < {MIN_SHARE_PRICE} USD), ohitetaan"
                 )
                 continue
 
-            paivavaihto = kurssidata.get("keskimaarainen_paivavaihto_usd")
-            if paivavaihto is not None and paivavaihto < MIN_DAILY_TURNOVER:
+            turnover = price_data.get("avg_daily_turnover_usd")
+            if turnover is not None and turnover < MIN_DAILY_TURNOVER:
                 _loki.info(
-                    f"{symboli}: MIN_DAILY_TURNOVER-raja hylkasi (paivavaihto "
-                    f"{paivavaihto:,.0f} USD < {MIN_DAILY_TURNOVER:,.0f} USD), "
+                    f"{symbol}: MIN_DAILY_TURNOVER-raja hylkasi (paivavaihto "
+                    f"{turnover:,.0f} USD < {MIN_DAILY_TURNOVER:,.0f} USD), "
                     f"ohitetaan"
                 )
                 continue
 
-            atr = hae_atr(symboli)
-            rsi = hae_rsi(symboli)
+            atr = fetch_atr(symbol)
+            rsi = fetch_rsi(symbol)
 
-            pisteet, indikaattorit, perustelu = laske_pisteet(kurssidata, atr, rsi)
+            score, indicators, rationale = calculate_score(price_data, atr, rsi)
 
             tietokanta.insert_score(
-                run_id=ajo_id,
-                run_type=ajotyyppi,
-                symbol=symboli,
-                risk_reward_score=pisteet,
-                price=nykyhinta,
-                indicators_json=json.dumps(indikaattorit),
-                rationale=perustelu,
-                db_path=polku,
+                run_id=run_id,
+                run_type=run_type,
+                symbol=symbol,
+                risk_reward_score=score,
+                price=current_price,
+                indicators_json=json.dumps(indicators),
+                rationale=rationale,
+                db_path=db_path,
             )
-            kirjattu += 1
-        except KeskenerainenKurssidataVirhe:
+            recorded += 1
+        except IncompletePriceDataError:
             # Ei nielaista: jos porssi on auki, jokainen symboli on yhta
             # pilalla, joten koko ajon pitaa keskeytya eika vain ohittaa
             # yksi symboli. Orkestroija kaarii ja lokittaa taman.
             raise
-        except Exception as virhe:
-            _loki.warning(f"{symboli}: kasittely epaonnistui, ohitetaan - {virhe}")
+        except Exception as error:
+            _loki.warning(f"{symbol}: kasittely epaonnistui, ohitetaan - {error}")
             continue
 
-    yhteenveto = f"{kirjattu} pisteytysta kirjattu"
-    _loki.info(f"Ajo {ajo_id} ({ajotyyppi}): {yhteenveto}")
-    return yhteenveto
+    summary = f"{recorded} pisteytysta kirjattu"
+    _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
+    return summary
+
+
+def aja(ajo_id, ajotyyppi, polku=tietokanta.DEFAULT_DB_PATH) -> str:
+    # Valiaikainen taaksepainyhteensopiva ohitus - orkestroija kutsuu
+    # toistaiseksi kaikkia agentteja nimella aja(polku=...), koska agentit
+    # nimetaan uudelleen yksi kerrallaan (vaihe R, askel 3). Poistetaan kun
+    # viimeinenkin agentti on nimetty ja orkestroija kutsuu run():ia suoraan.
+    return run(ajo_id, ajotyyppi, db_path=polku)

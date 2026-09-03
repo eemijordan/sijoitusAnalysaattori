@@ -42,20 +42,20 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
     monkeypatch.setattr(trendinmetsastaja, "hae_tavoitehinnat", lambda: [])
     monkeypatch.setattr(trendinmetsastaja, "hae_us_symbolit", lambda: {"AAPL", "MSFT"})
 
-    kurssidata = {
-        "nykyhinta": 150.0,
+    price_data = {
+        "current_price": 150.0,
         "sma50": 140.0,
         "sma200": 130.0,
-        "ylin_52vk": 180.0,
-        "alin_52vk": 100.0,
-        "historia_paivia": 252,
-        "keskivaihto": 1_000_000,
+        "high_52w": 180.0,
+        "low_52w": 100.0,
+        "history_days": 252,
+        "avg_turnover": 1_000_000,
     }
     monkeypatch.setattr(
-        tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata
+        tekninen_analyytikko, "fetch_price_data", lambda symbol: price_data
     )
-    monkeypatch.setattr(tekninen_analyytikko, "hae_atr", lambda symboli: 2.0)
-    monkeypatch.setattr(tekninen_analyytikko, "hae_rsi", lambda symboli: 55.0)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 2.0)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 55.0)
 
     ajo_id = orkestroija.run_normal(polku)
 
