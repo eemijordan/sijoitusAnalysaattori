@@ -93,9 +93,15 @@ def alusta_tietokanta(polku=OLETUS_TIETOKANTA):
         rivimaara = yhteys.execute("SELECT COUNT(*) FROM portfolio").fetchone()[0]
         if rivimaara == 0:
             yhteys.execute(
-                "INSERT INTO portfolio (id, alkupaaoma, kateinen, valuutta, paivitetty) "
+                "INSERT INTO portfolio "
+                "(id, alkupaaoma, kateinen, valuutta, paivitetty) "
                 "VALUES (1, ?, ?, ?, ?)",
-                (ALKUPAAOMA, ALKUPAAOMA, "USD", datetime.now().isoformat(timespec="seconds")),
+                (
+                    ALKUPAAOMA,
+                    ALKUPAAOMA,
+                    "USD",
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
             )
         yhteys.commit()
     finally:
@@ -109,11 +115,11 @@ def luo_ajo_id() -> str:
 def hae_kateinen(polku=OLETUS_TIETOKANTA) -> float:
     yhteys = avaa_yhteys(polku)
     try:
-        rivi = yhteys.execute(
-            "SELECT kateinen FROM portfolio WHERE id = 1"
-        ).fetchone()
+        rivi = yhteys.execute("SELECT kateinen FROM portfolio WHERE id = 1").fetchone()
         if rivi is None:
-            raise RuntimeError("portfolio-taulu on tyhja - aja alusta_tietokanta() ensin")
+            raise RuntimeError(
+                "portfolio-taulu on tyhja - aja alusta_tietokanta() ensin"
+            )
         return rivi["kateinen"]
     finally:
         yhteys.close()
@@ -122,16 +128,17 @@ def hae_kateinen(polku=OLETUS_TIETOKANTA) -> float:
 def muuta_kateista(delta: float, polku=OLETUS_TIETOKANTA) -> float:
     yhteys = avaa_yhteys(polku)
     try:
-        rivi = yhteys.execute(
-            "SELECT kateinen FROM portfolio WHERE id = 1"
-        ).fetchone()
+        rivi = yhteys.execute("SELECT kateinen FROM portfolio WHERE id = 1").fetchone()
         if rivi is None:
-            raise RuntimeError("portfolio-taulu on tyhja - aja alusta_tietokanta() ensin")
+            raise RuntimeError(
+                "portfolio-taulu on tyhja - aja alusta_tietokanta() ensin"
+            )
 
         uusi_saldo = rivi["kateinen"] + delta
         if uusi_saldo < 0:
             raise ValueError(
-                f"kateinen menisi negatiiviseksi: {rivi['kateinen']} + {delta} = {uusi_saldo}"
+                f"kateinen menisi negatiiviseksi: {rivi['kateinen']} + {delta} "
+                f"= {uusi_saldo}"
             )
 
         yhteys.execute(
@@ -330,18 +337,30 @@ def avaa_positio(
                 tavoitehinta, ostopvm, osto_ajo_id
             ) VALUES (?, 'aktiivinen', ?, ?, ?, ?, ?, ?, ?)
             """,
-            (symboli, ostohinta, maara, panos_usd, stop_loss, tavoitehinta, nyt, osto_ajo_id),
+            (
+                symboli,
+                ostohinta,
+                maara,
+                panos_usd,
+                stop_loss,
+                tavoitehinta,
+                nyt,
+                osto_ajo_id,
+            ),
         )
         positio_id = kursori.lastrowid
 
         rivi = yhteys.execute("SELECT kateinen FROM portfolio WHERE id = 1").fetchone()
         if rivi is None:
-            raise RuntimeError("portfolio-taulu on tyhja - aja alusta_tietokanta() ensin")
+            raise RuntimeError(
+                "portfolio-taulu on tyhja - aja alusta_tietokanta() ensin"
+            )
 
         uusi_saldo = rivi["kateinen"] - panos_usd
         if uusi_saldo < 0:
             raise ValueError(
-                f"kateinen menisi negatiiviseksi: {rivi['kateinen']} - {panos_usd} = {uusi_saldo}"
+                f"kateinen menisi negatiiviseksi: {rivi['kateinen']} - {panos_usd} "
+                f"= {uusi_saldo}"
             )
 
         yhteys.execute(

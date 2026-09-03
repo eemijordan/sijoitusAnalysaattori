@@ -32,7 +32,9 @@ SMA200_JAKSO = 200
 
 
 def _on_rajavirhe(vastaus: requests.Response, data) -> bool:
-    return vastaus.status_code == 429 or (isinstance(data, dict) and data.get("code") == 429)
+    return vastaus.status_code == 429 or (
+        isinstance(data, dict) and data.get("code") == 429
+    )
 
 
 def _hae_twelvedata_json(url: str, params: dict) -> dict:
@@ -194,8 +196,18 @@ def hae_rsi(symboli: str) -> float | None:
 
 
 def _muodosta_perustelu(
-    atr_pct, riski_pisteet, sma50, sma200, nykyhinta, trendi_pisteet,
-    historia_paivia, asema_pct, asema_pisteet, rsi, rsi_pisteet, pisteet,
+    atr_pct,
+    riski_pisteet,
+    sma50,
+    sma200,
+    nykyhinta,
+    trendi_pisteet,
+    historia_paivia,
+    asema_pct,
+    asema_pisteet,
+    rsi,
+    rsi_pisteet,
+    pisteet,
 ) -> str:
     if atr_pct is not None:
         atr_teksti = f"ATR {atr_pct:.1f} % ({riski_pisteet} p)".replace(".", ",")
@@ -217,7 +229,9 @@ def _muodosta_perustelu(
     else:
         hinta_vs_sma50 = "yli SMA50" if nykyhinta > sma50 else "alle SMA50"
         sma50_vs_sma200 = "yli SMA200" if sma50 > sma200 else "alle SMA200"
-        trendi_teksti = f"hinta {hinta_vs_sma50}, SMA50 {sma50_vs_sma200} ({trendi_pisteet} p)"
+        trendi_teksti = (
+            f"hinta {hinta_vs_sma50}, SMA50 {sma50_vs_sma200} ({trendi_pisteet} p)"
+        )
 
     if asema_pct is not None:
         asema_teksti = f"{asema_pct:.0f} % vaihteluvalista ({asema_pisteet} p)"
@@ -230,10 +244,15 @@ def _muodosta_perustelu(
         rsi_teksti = f"RSI puuttuu ({rsi_pisteet} p)"
 
     pisteet_teksti = f"{pisteet:g}".replace(".", ",")
-    return f"{atr_teksti}, {trendi_teksti}, {asema_teksti}, {rsi_teksti} = {pisteet_teksti}"
+    return (
+        f"{atr_teksti}, {trendi_teksti}, {asema_teksti}, "
+        f"{rsi_teksti} = {pisteet_teksti}"
+    )
 
 
-def laske_pisteet(kurssidata: dict, atr: float | None, rsi: float | None) -> tuple[float, dict, str]:
+def laske_pisteet(
+    kurssidata: dict, atr: float | None, rsi: float | None
+) -> tuple[float, dict, str]:
     nykyhinta = kurssidata["nykyhinta"]
     sma50 = kurssidata.get("sma50")
     sma200 = kurssidata.get("sma200")
@@ -291,7 +310,9 @@ def laske_pisteet(kurssidata: dict, atr: float | None, rsi: float | None) -> tup
     else:
         rsi_pisteet = 0
 
-    pisteet_ennen_rajausta = riski_pisteet + trendi_pisteet + asema_pisteet + rsi_pisteet
+    pisteet_ennen_rajausta = (
+        riski_pisteet + trendi_pisteet + asema_pisteet + rsi_pisteet
+    )
     pisteet = max(0, min(10, pisteet_ennen_rajausta))
 
     indikaattorit = {
@@ -309,14 +330,26 @@ def laske_pisteet(kurssidata: dict, atr: float | None, rsi: float | None) -> tup
         "rsi": rsi,
         "rsi_pisteet": rsi_pisteet,
         "historia_paivia": historia_paivia,
-        "keskimaarainen_paivavaihto_usd": kurssidata.get("keskimaarainen_paivavaihto_usd"),
+        "keskimaarainen_paivavaihto_usd": kurssidata.get(
+            "keskimaarainen_paivavaihto_usd"
+        ),
         "viimeisin_palkki": kurssidata.get("viimeisin_palkki"),
         "pisteet_ennen_rajausta": pisteet_ennen_rajausta,
     }
 
     perustelu = _muodosta_perustelu(
-        atr_pct, riski_pisteet, sma50, sma200, nykyhinta, trendi_pisteet,
-        historia_paivia, asema_pct, asema_pisteet, rsi, rsi_pisteet, pisteet,
+        atr_pct,
+        riski_pisteet,
+        sma50,
+        sma200,
+        nykyhinta,
+        trendi_pisteet,
+        historia_paivia,
+        asema_pct,
+        asema_pisteet,
+        rsi,
+        rsi_pisteet,
+        pisteet,
     )
 
     return pisteet, indikaattorit, perustelu

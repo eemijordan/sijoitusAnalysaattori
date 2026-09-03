@@ -7,7 +7,9 @@ from core import orkestroija, tietokanta
 def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
 
-    tuore_iso = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    tuore_iso = (datetime.now(timezone.utc) - timedelta(days=1)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z"
+    )
     tuore_pvm = (date.today() - timedelta(days=5)).isoformat()
 
     monkeypatch.setattr(
@@ -49,7 +51,9 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
         "historia_paivia": 252,
         "keskivaihto": 1_000_000,
     }
-    monkeypatch.setattr(tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata)
+    monkeypatch.setattr(
+        tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata
+    )
     monkeypatch.setattr(tekninen_analyytikko, "hae_atr", lambda symboli: 2.0)
     monkeypatch.setattr(tekninen_analyytikko, "hae_rsi", lambda symboli: 55.0)
 

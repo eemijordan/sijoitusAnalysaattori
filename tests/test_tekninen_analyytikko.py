@@ -19,7 +19,14 @@ class _KiinteaKello:
 
 
 def _paivapalkki(pvm, close=100.0, high=101.0, low=99.0, volume=1_000_000):
-    return {"datetime": pvm, "open": close, "high": high, "low": low, "close": close, "volume": volume}
+    return {
+        "datetime": pvm,
+        "open": close,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": volume,
+    }
 
 
 def _time_series_vastaus(paivat):
@@ -73,13 +80,17 @@ def test_matala_volatiliteetti_saa_riskista_3_korkea_0():
 def test_hinta_sma50_alla_ei_saa_trendipisteita():
     kurssidata = _kurssidata(nykyhinta=80.0, sma50=90.0, sma200=100.0)
 
-    _, indikaattorit, _ = tekninen_analyytikko.laske_pisteet(kurssidata, atr=None, rsi=None)
+    _, indikaattorit, _ = tekninen_analyytikko.laske_pisteet(
+        kurssidata, atr=None, rsi=None
+    )
 
     assert indikaattorit["trendi_pisteet"] == 0
 
 
 def test_alle_200_paivan_historia_jattaa_sma200_pois():
-    kurssidata = _kurssidata(nykyhinta=100.0, sma50=90.0, sma200=None, historia_paivia=150)
+    kurssidata = _kurssidata(
+        nykyhinta=100.0, sma50=90.0, sma200=None, historia_paivia=150
+    )
 
     pisteet, indikaattorit, perustelu = tekninen_analyytikko.laske_pisteet(
         kurssidata, atr=None, rsi=None
@@ -121,7 +132,9 @@ def test_yhteispisteet_rajautuvat_valille_0_10():
     # atr=None(0) + trendi=None(0) + asema alle 40%(0) + rsi yli 75(-2) = -2
     # raakana -> rajataan nollaan, ei negatiiviseksi. Pistemallin ylaraja on
     # rakenteellisesti 10 (3+4+2+1), joten se ei voi koskaan ylittya.
-    kurssidata = _kurssidata(nykyhinta=10.0, ylin_52vk=100.0, alin_52vk=0.0)  # asema 10 % -> 0p
+    kurssidata = _kurssidata(
+        nykyhinta=10.0, ylin_52vk=100.0, alin_52vk=0.0
+    )  # asema 10 % -> 0p
 
     pisteet, _, _ = tekninen_analyytikko.laske_pisteet(kurssidata, atr=None, rsi=80.0)
 
@@ -147,21 +160,27 @@ def test_puuttuva_atr_ja_rsi_eivat_kaada_laskentaa():
 
 
 def test_onko_palkki_valmis_eilinen_palkki():
-    valmis, syy = tekninen_analyytikko.onko_palkki_valmis(date(2026, 9, 3), date(2026, 9, 4))
+    valmis, syy = tekninen_analyytikko.onko_palkki_valmis(
+        date(2026, 9, 3), date(2026, 9, 4)
+    )
 
     assert valmis is True
     assert syy == ""
 
 
 def test_onko_palkki_valmis_kuluva_paiva():
-    valmis, syy = tekninen_analyytikko.onko_palkki_valmis(date(2026, 9, 4), date(2026, 9, 4))
+    valmis, syy = tekninen_analyytikko.onko_palkki_valmis(
+        date(2026, 9, 4), date(2026, 9, 4)
+    )
 
     assert valmis is False
     assert "2026-09-04" in syy
 
 
 def test_onko_palkki_valmis_tulevaisuus():
-    valmis, syy = tekninen_analyytikko.onko_palkki_valmis(date(2026, 9, 5), date(2026, 9, 4))
+    valmis, syy = tekninen_analyytikko.onko_palkki_valmis(
+        date(2026, 9, 5), date(2026, 9, 4)
+    )
 
     assert valmis is False
     assert "2026-09-05" in syy
@@ -184,10 +203,19 @@ def test_onko_palkki_valmis_perjantai_ennen_maanantaita_viikonlopun_yli():
 def test_hae_kurssidata_eilinen_palkki_palauttaa_kurssidatan(monkeypatch):
     tanaan = date(2026, 9, 4)
     eilen = date(2026, 9, 3)
-    kiintea_nyt = datetime(tanaan.year, tanaan.month, tanaan.day, 11, 0, tzinfo=ZoneInfo("America/New_York"))
+    kiintea_nyt = datetime(
+        tanaan.year,
+        tanaan.month,
+        tanaan.day,
+        11,
+        0,
+        tzinfo=ZoneInfo("America/New_York"),
+    )
 
     monkeypatch.setattr(tekninen_analyytikko, "datetime", _KiinteaKello(kiintea_nyt))
-    monkeypatch.setattr(tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain")
+    monkeypatch.setattr(
+        tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain"
+    )
     monkeypatch.setattr(
         tekninen_analyytikko,
         "_hae_twelvedata_json",
@@ -202,10 +230,19 @@ def test_hae_kurssidata_eilinen_palkki_palauttaa_kurssidatan(monkeypatch):
 
 def test_hae_kurssidata_kesken_olevalta_paivalta_nostaa_virheen(monkeypatch):
     tanaan = date(2026, 9, 4)
-    kiintea_nyt = datetime(tanaan.year, tanaan.month, tanaan.day, 11, 0, tzinfo=ZoneInfo("America/New_York"))
+    kiintea_nyt = datetime(
+        tanaan.year,
+        tanaan.month,
+        tanaan.day,
+        11,
+        0,
+        tzinfo=ZoneInfo("America/New_York"),
+    )
 
     monkeypatch.setattr(tekninen_analyytikko, "datetime", _KiinteaKello(kiintea_nyt))
-    monkeypatch.setattr(tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain")
+    monkeypatch.setattr(
+        tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain"
+    )
     monkeypatch.setattr(
         tekninen_analyytikko,
         "_hae_twelvedata_json",
@@ -217,7 +254,9 @@ def test_hae_kurssidata_kesken_olevalta_paivalta_nostaa_virheen(monkeypatch):
 
 
 def test_hae_kurssidata_puuttuva_datetime_nostaa_virheen(monkeypatch):
-    monkeypatch.setattr(tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain")
+    monkeypatch.setattr(
+        tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain"
+    )
     rivi = _paivapalkki("2026-09-03")
     del rivi["datetime"]
     monkeypatch.setattr(
@@ -231,7 +270,9 @@ def test_hae_kurssidata_puuttuva_datetime_nostaa_virheen(monkeypatch):
 
 
 def test_hae_kurssidata_jasentymaton_datetime_nostaa_virheen(monkeypatch):
-    monkeypatch.setattr(tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain")
+    monkeypatch.setattr(
+        tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain"
+    )
     monkeypatch.setattr(
         tekninen_analyytikko,
         "_hae_twelvedata_json",
@@ -257,17 +298,27 @@ def test_laske_kurssitunnusluvut_palauttaa_viimeisimman_palkin():
 # --- aja(): tietokantaan kirjoittava kerros, hakufunktiot monkeypatchattu ---
 
 
-def test_aja_kirjoittaa_pisteytysrivin_oikealla_ajo_idlla_ja_hinnalla(tmp_path, monkeypatch):
+def test_aja_kirjoittaa_pisteytysrivin_oikealla_ajo_idlla_ja_hinnalla(
+    tmp_path, monkeypatch
+):
     polku = tmp_path / "testi.db"
     tietokanta.alusta_tietokanta(polku)
     tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1", ajotyyppi="normaali", symboli="AAPL", lahde="analyytikko",
-        jatkoon=1, polku=polku,
+        ajo_id="ajo1",
+        ajotyyppi="normaali",
+        symboli="AAPL",
+        lahde="analyytikko",
+        jatkoon=1,
+        polku=polku,
     )
 
-    kurssidata = _kurssidata(nykyhinta=150.0, sma50=140.0, sma200=130.0, ylin_52vk=180.0, alin_52vk=100.0)
+    kurssidata = _kurssidata(
+        nykyhinta=150.0, sma50=140.0, sma200=130.0, ylin_52vk=180.0, alin_52vk=100.0
+    )
 
-    monkeypatch.setattr(tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata)
+    monkeypatch.setattr(
+        tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata
+    )
     monkeypatch.setattr(tekninen_analyytikko, "hae_atr", lambda symboli: 2.0)
     monkeypatch.setattr(tekninen_analyytikko, "hae_rsi", lambda symboli: 55.0)
 
@@ -284,8 +335,12 @@ def test_aja_ohittaa_alle_min_osakekurssin_eika_kutsu_atr_rsi(tmp_path, monkeypa
     polku = tmp_path / "testi.db"
     tietokanta.alusta_tietokanta(polku)
     tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1", ajotyyppi="normaali", symboli="PENNY", lahde="analyytikko",
-        jatkoon=1, polku=polku,
+        ajo_id="ajo1",
+        ajotyyppi="normaali",
+        symboli="PENNY",
+        lahde="analyytikko",
+        jatkoon=1,
+        polku=polku,
     )
 
     kurssidata = _kurssidata(nykyhinta=2.0)
@@ -293,7 +348,9 @@ def test_aja_ohittaa_alle_min_osakekurssin_eika_kutsu_atr_rsi(tmp_path, monkeypa
     def _ei_saa_kutsua(symboli):
         raise AssertionError("ATR/RSI-hakua ei saa tehda alle MIN_OSAKEKURSSI-hinnalla")
 
-    monkeypatch.setattr(tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata)
+    monkeypatch.setattr(
+        tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata
+    )
     monkeypatch.setattr(tekninen_analyytikko, "hae_atr", _ei_saa_kutsua)
     monkeypatch.setattr(tekninen_analyytikko, "hae_rsi", _ei_saa_kutsua)
 
@@ -307,8 +364,12 @@ def test_aja_ohittaa_alle_min_paivavaihdon_eika_kutsu_atr_rsi(tmp_path, monkeypa
     polku = tmp_path / "testi.db"
     tietokanta.alusta_tietokanta(polku)
     tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1", ajotyyppi="normaali", symboli="MICRO", lahde="analyytikko",
-        jatkoon=1, polku=polku,
+        ajo_id="ajo1",
+        ajotyyppi="normaali",
+        symboli="MICRO",
+        lahde="analyytikko",
+        jatkoon=1,
+        polku=polku,
     )
 
     kurssidata = _kurssidata(nykyhinta=20.0, keskimaarainen_paivavaihto_usd=800_000)
@@ -316,7 +377,9 @@ def test_aja_ohittaa_alle_min_paivavaihdon_eika_kutsu_atr_rsi(tmp_path, monkeypa
     def _ei_saa_kutsua(symboli):
         raise AssertionError("ATR/RSI-hakua ei saa tehda alle MIN_PAIVAVAIHTO-rajan")
 
-    monkeypatch.setattr(tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata)
+    monkeypatch.setattr(
+        tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata
+    )
     monkeypatch.setattr(tekninen_analyytikko, "hae_atr", _ei_saa_kutsua)
     monkeypatch.setattr(tekninen_analyytikko, "hae_rsi", _ei_saa_kutsua)
 
@@ -330,16 +393,26 @@ def test_aja_paastaa_lapi_riittavan_paivavaihdon(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
     tietokanta.alusta_tietokanta(polku)
     tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1", ajotyyppi="normaali", symboli="BIGCO", lahde="analyytikko",
-        jatkoon=1, polku=polku,
+        ajo_id="ajo1",
+        ajotyyppi="normaali",
+        symboli="BIGCO",
+        lahde="analyytikko",
+        jatkoon=1,
+        polku=polku,
     )
 
     kurssidata = _kurssidata(
-        nykyhinta=100.0, sma50=90.0, sma200=80.0, ylin_52vk=120.0, alin_52vk=60.0,
+        nykyhinta=100.0,
+        sma50=90.0,
+        sma200=80.0,
+        ylin_52vk=120.0,
+        alin_52vk=60.0,
         keskimaarainen_paivavaihto_usd=40_000_000,
     )
 
-    monkeypatch.setattr(tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata)
+    monkeypatch.setattr(
+        tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata
+    )
     monkeypatch.setattr(tekninen_analyytikko, "hae_atr", lambda symboli: 1.5)
     monkeypatch.setattr(tekninen_analyytikko, "hae_rsi", lambda symboli: 50.0)
 
@@ -354,22 +427,34 @@ def test_loki_kertoo_kumpi_raja_hylkasi_symbolin(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
     tietokanta.alusta_tietokanta(polku)
     tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1", ajotyyppi="normaali", symboli="PENNY", lahde="analyytikko",
-        jatkoon=1, polku=polku,
+        ajo_id="ajo1",
+        ajotyyppi="normaali",
+        symboli="PENNY",
+        lahde="analyytikko",
+        jatkoon=1,
+        polku=polku,
     )
     tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1", ajotyyppi="normaali", symboli="MICRO", lahde="analyytikko",
-        jatkoon=1, polku=polku,
+        ajo_id="ajo1",
+        ajotyyppi="normaali",
+        symboli="MICRO",
+        lahde="analyytikko",
+        jatkoon=1,
+        polku=polku,
     )
 
     kurssidata_penny = _kurssidata(nykyhinta=2.0)
-    kurssidata_micro = _kurssidata(nykyhinta=20.0, keskimaarainen_paivavaihto_usd=800_000)
+    kurssidata_micro = _kurssidata(
+        nykyhinta=20.0, keskimaarainen_paivavaihto_usd=800_000
+    )
 
     def _hae_kurssidata(symboli):
         return kurssidata_penny if symboli == "PENNY" else kurssidata_micro
 
     viestit = []
-    monkeypatch.setattr(tekninen_analyytikko._loki, "info", lambda viesti: viestit.append(viesti))
+    monkeypatch.setattr(
+        tekninen_analyytikko._loki, "info", lambda viesti: viestit.append(viesti)
+    )
     monkeypatch.setattr(tekninen_analyytikko, "hae_kurssidata", _hae_kurssidata)
     monkeypatch.setattr(tekninen_analyytikko, "hae_atr", lambda symboli: 1.5)
     monkeypatch.setattr(tekninen_analyytikko, "hae_rsi", lambda symboli: 50.0)
@@ -389,15 +474,25 @@ def test_aja_yhden_symbolin_epaonnistuminen_ei_esta_muita(tmp_path, monkeypatch)
     polku = tmp_path / "testi.db"
     tietokanta.alusta_tietokanta(polku)
     tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1", ajotyyppi="normaali", symboli="BAD", lahde="analyytikko",
-        jatkoon=1, polku=polku,
+        ajo_id="ajo1",
+        ajotyyppi="normaali",
+        symboli="BAD",
+        lahde="analyytikko",
+        jatkoon=1,
+        polku=polku,
     )
     tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1", ajotyyppi="normaali", symboli="GOOD", lahde="analyytikko",
-        jatkoon=1, polku=polku,
+        ajo_id="ajo1",
+        ajotyyppi="normaali",
+        symboli="GOOD",
+        lahde="analyytikko",
+        jatkoon=1,
+        polku=polku,
     )
 
-    kurssidata_hyva = _kurssidata(nykyhinta=100.0, sma50=90.0, sma200=80.0, ylin_52vk=120.0, alin_52vk=60.0)
+    kurssidata_hyva = _kurssidata(
+        nykyhinta=100.0, sma50=90.0, sma200=80.0, ylin_52vk=120.0, alin_52vk=60.0
+    )
 
     def _hae_kurssidata(symboli):
         if symboli == "BAD":

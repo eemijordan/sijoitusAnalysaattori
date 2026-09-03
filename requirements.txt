@@ -40,6 +40,7 @@ python-multipart==0.0.32
 referencing==0.37.0
 requests==2.34.2
 rpds-py==2026.6.3
+ruff==0.16.6
 six==1.17.0
 starlette==1.6.0
 streamlit==1.62.0

@@ -20,7 +20,8 @@ def paata_osto(pisteytys: dict, ehdokas: dict | None, tila: dict) -> tuple[str, 
     if hinta is None or hinta <= 0:
         return (
             "hylatty",
-            f"hinta puuttuu tai on virheellinen ({hinta!r}), ehtoa 4 ei voida tarkistaa",
+            f"hinta puuttuu tai on virheellinen ({hinta!r}), "
+            f"ehtoa 4 ei voida tarkistaa",
         )
 
     # 2. duplikaatti - sama symboli ei saa olla aktiivisena kahdesti.
@@ -58,12 +59,16 @@ def paata_osto(pisteytys: dict, ehdokas: dict | None, tila: dict) -> tuple[str, 
     if tila["aktiivisia"] >= MAX_POSITIOT:
         return (
             "hylatty",
-            f"aktiivisia positioita {tila['aktiivisia']} >= MAX_POSITIOT {MAX_POSITIOT}",
+            f"aktiivisia positioita {tila['aktiivisia']} "
+            f">= MAX_POSITIOT {MAX_POSITIOT}",
         )
 
     # 6. kateinen.
     if tila["kateinen"] < POSITION_KOKO:
-        return "hylatty", f"kateinen {tila['kateinen']:.2f} < POSITION_KOKO {POSITION_KOKO}"
+        return (
+            "hylatty",
+            f"kateinen {tila['kateinen']:.2f} < POSITION_KOKO {POSITION_KOKO}",
+        )
 
     perustelu = (
         f"risk_reward_pisteet {rr} >= RR_KYNNYS {RR_KYNNYS}; {hintaehto_teksti}; "
@@ -177,8 +182,8 @@ def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.OLETUS_TIETOKANTA) -> str:
             hylattyja += 1
 
     yhteenveto = (
-        f"{len(pisteytykset_jarjestettyna)} paatosta, {ostoja} ostoa, {hylattyja} hylattya, "
-        f"{viiteostohinta_puuttuu} ilman viiteostohintaa"
+        f"{len(pisteytykset_jarjestettyna)} paatosta, {ostoja} ostoa, "
+        f"{hylattyja} hylattya, {viiteostohinta_puuttuu} ilman viiteostohintaa"
     )
     _loki.info(f"Ajo {ajo_id} ({ajotyyppi}): {yhteenveto}")
     return yhteenveto

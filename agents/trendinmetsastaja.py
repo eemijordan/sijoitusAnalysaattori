@@ -103,7 +103,9 @@ def _hae_sivutettu(nimi: str, url: str, apikey: str) -> list[dict]:
     for sivu in range(SIVUJA_MAX):
         try:
             data = _hae_json_valimuistilla(
-                f"{nimi}_sivu{sivu}", url, {"page": sivu, "limit": SIVUN_KOKO, "apikey": apikey}
+                f"{nimi}_sivu{sivu}",
+                url,
+                {"page": sivu, "limit": SIVUN_KOKO, "apikey": apikey},
             )
         except requests.RequestException:
             if sivu == 0:
@@ -117,7 +119,10 @@ def _hae_sivutettu(nimi: str, url: str, apikey: str) -> list[dict]:
         if not isinstance(data, list):
             if sivu == 0:
                 raise RuntimeError(f"{nimi} palautti odottamattoman muodon: {data!r}")
-            _loki.warning(f"{nimi}: sivu {sivu} palautti odottamattoman muodon, lopetetaan sivutus")
+            _loki.warning(
+                f"{nimi}: sivu {sivu} palautti odottamattoman muodon, "
+                f"lopetetaan sivutus"
+            )
             break
 
         if not data:
@@ -140,7 +145,9 @@ def _hae_sivutettu(nimi: str, url: str, apikey: str) -> list[dict]:
 
 def hae_analyytikkomuutokset() -> list[dict]:
     apikey = hae_fmp_avain()
-    return _hae_sivutettu("grades-latest-news", f"{FMP_BASE}/grades-latest-news", apikey)
+    return _hae_sivutettu(
+        "grades-latest-news", f"{FMP_BASE}/grades-latest-news", apikey
+    )
 
 
 def hae_kongressikaupat() -> list[dict]:
@@ -152,7 +159,9 @@ def hae_kongressikaupat() -> list[dict]:
 
 def hae_sisapiirikaupat() -> list[dict]:
     apikey = hae_fmp_avain()
-    return _hae_sivutettu("insider-trading-latest", f"{FMP_BASE}/insider-trading/latest", apikey)
+    return _hae_sivutettu(
+        "insider-trading-latest", f"{FMP_BASE}/insider-trading/latest", apikey
+    )
 
 
 def hae_tavoitehinnat() -> list[dict]:
@@ -198,7 +207,9 @@ def _hae_valimuistattu_symbolilista(max_ika_vrk: int) -> tuple[set[str], int] | 
 
 def _tallenna_symbolilista_valimuistiin(symbolit: set[str]) -> None:
     VALIMUISTI_DIR.mkdir(parents=True, exist_ok=True)
-    tiedosto = VALIMUISTI_DIR / f"{SYMBOLILISTA_TIEDOSTONIMI}_{date.today().isoformat()}.json"
+    tiedosto = (
+        VALIMUISTI_DIR / f"{SYMBOLILISTA_TIEDOSTONIMI}_{date.today().isoformat()}.json"
+    )
     with open(tiedosto, "w", encoding="utf-8") as tiedosto_kahva:
         json.dump(sorted(symbolit), tiedosto_kahva)
 
@@ -214,7 +225,8 @@ def _hae_porssin_symbolit(porssi: str, apikey: str) -> list[dict]:
     rivit = data.get("data") if isinstance(data, dict) else None
     if not isinstance(rivit, list):
         raise RuntimeError(
-            f"Twelve Data /stocks (exchange={porssi}) palautti odottamattoman muodon: {data!r}"
+            f"Twelve Data /stocks (exchange={porssi}) palautti odottamattoman "
+            f"muodon: {data!r}"
         )
     return rivit
 
@@ -228,7 +240,9 @@ def _hae_koko_maan_symbolit(apikey: str) -> list[dict]:
     vastaus.raise_for_status()
     data = vastaus.json()
     if not isinstance(data, dict) or not isinstance(data.get("data"), list):
-        raise RuntimeError(f"Twelve Data /stocks palautti odottamattoman muodon: {data!r}")
+        raise RuntimeError(
+            f"Twelve Data /stocks palautti odottamattoman muodon: {data!r}"
+        )
     return data["data"]
 
 
@@ -299,13 +313,15 @@ def hae_us_symbolit() -> set[str]:
 
     if len(symbolit) < MIN_US_SYMBOLIMAARA:
         raise RuntimeError(
-            f"Twelve Data /stocks palautti epauskottavan pienen symbolijoukon "     
+            f"Twelve Data /stocks palautti epauskottavan pienen symbolijoukon "
             f"({len(symbolit)} kpl) - parsinta on todennakoisesti rikki"
         )
     # TODO
 
     _tallenna_symbolilista_valimuistiin(symbolit)
-    _loki.info(f"twelvedata-stocks: haettu tuoreena, {len(symbolit)} hyvaksyttya US-symbolia")
+    _loki.info(
+        f"twelvedata-stocks: haettu tuoreena, {len(symbolit)} hyvaksyttya US-symbolia"
+    )
     return symbolit
 
 
@@ -351,7 +367,7 @@ def _amount_ylaraja(amount) -> float | None:
 
 
 def _on_korotus_luokkavertailulla(uusi: str, edellinen: str) -> bool | None:
-    ''' '''
+    """ """
     u = LUOKKA_JARJESTYS.get(uusi.strip().lower())
     e = LUOKKA_JARJESTYS.get(edellinen.strip().lower())
     if u is None or e is None:
@@ -418,7 +434,9 @@ def _pisteyta_analyytikkorivi(rivi: dict, nyt: datetime) -> tuple[int, str] | No
     if action_teksti is None:
         # Action-kenttaa ei ole lainkaan riviIla - paatellaan korotus
         # luokkavertailulla, tuntematon kohdellaan aina hold:na (ei tata haaraa).
-        action_teksti = "upgrade" if _on_korotus_luokkavertailulla(uusi, edellinen) else "hold"
+        action_teksti = (
+            "upgrade" if _on_korotus_luokkavertailulla(uusi, edellinen) else "hold"
+        )
 
     pisteet = 0
     if action_teksti == "upgrade":
@@ -554,7 +572,10 @@ def _pisteyta_tavoitehintarivi(rivi: dict, nyt: datetime) -> tuple[int, str] | N
 
     yhtio = str(rivi.get("analystCompany") or "Analyytikko").strip()
     pvm_teksti = str(rivi.get("publishedDate") or "?")[:10]
-    syy = f"{yhtio} tavoitehinta {tavoite:g} USD, +{nousu_pct:.0f} % nykyhinnasta ({pvm_teksti})"
+    syy = (
+        f"{yhtio} tavoitehinta {tavoite:g} USD, "
+        f"+{nousu_pct:.0f} % nykyhinnasta ({pvm_teksti})"
+    )
 
     return pisteet, syy
 
@@ -563,13 +584,20 @@ LAHTEET = ("analyytikko", "kongressi", "sisapiiri", "tavoitehinta")
 
 
 def _lisaa_havainto(
-    tulokset: dict, symboli: str, lahde: str, pisteet: int, syy: str, hinta: float | None = None
+    tulokset: dict,
+    symboli: str,
+    lahde: str,
+    pisteet: int,
+    syy: str,
+    hinta: float | None = None,
 ) -> None:
     tieto = tulokset.setdefault(symboli, {nimi: [] for nimi in LAHTEET})
     tieto[lahde].append((pisteet, syy, hinta))
 
 
-def _paras(havainnot: list[tuple[int, str, float | None]]) -> tuple[int, str | None, float | None]:
+def _paras(
+    havainnot: list[tuple[int, str, float | None]],
+) -> tuple[int, str | None, float | None]:
     if not havainnot:
         return 0, None, None
     # key vertailee vain pisteita (h[0]), joten hintoja (h[2], voi olla
@@ -664,7 +692,11 @@ def muodosta_ehdokkaat(
 
     for rivi in analyytikkorivit:
         symboli = str(rivi.get("symbol") or "").strip()
-        if not _kelvollinen_symboli(symboli) or symboli in ohita or symboli not in sallitut:
+        if (
+            not _kelvollinen_symboli(symboli)
+            or symboli in ohita
+            or symboli not in sallitut
+        ):
             continue
         tulos = _pisteyta_analyytikkorivi(rivi, nyt)
         if tulos is None:
@@ -675,7 +707,11 @@ def muodosta_ehdokkaat(
 
     for rivi in kongressirivit:
         symboli = str(rivi.get("symbol") or "").strip()
-        if not _kelvollinen_symboli(symboli) or symboli in ohita or symboli not in sallitut:
+        if (
+            not _kelvollinen_symboli(symboli)
+            or symboli in ohita
+            or symboli not in sallitut
+        ):
             continue
         tyyppi = str(rivi.get("type") or "").strip().lower()
         if tyyppi != "purchase":
@@ -685,7 +721,11 @@ def muodosta_ehdokkaat(
 
     for rivi in sisapiirirvit:
         symboli = str(rivi.get("symbol") or "").strip()
-        if not _kelvollinen_symboli(symboli) or symboli in ohita or symboli not in sallitut:
+        if (
+            not _kelvollinen_symboli(symboli)
+            or symboli in ohita
+            or symboli not in sallitut
+        ):
             continue
         suunta = str(rivi.get("transactionType") or "").strip().upper()
         if not suunta.startswith("P-"):
@@ -698,7 +738,11 @@ def muodosta_ehdokkaat(
 
     for rivi in tavoitehintarivit:
         symboli = str(rivi.get("symbol") or "").strip()
-        if not _kelvollinen_symboli(symboli) or symboli in ohita or symboli not in sallitut:
+        if (
+            not _kelvollinen_symboli(symboli)
+            or symboli in ohita
+            or symboli not in sallitut
+        ):
             continue
         tulos = _pisteyta_tavoitehintarivi(rivi, nyt)
         if tulos is None:
@@ -707,7 +751,9 @@ def muodosta_ehdokkaat(
         hinta = _poimi_hinta(rivi, "priceWhenPosted")
         _lisaa_havainto(tulokset, symboli, "tavoitehinta", pisteet, syy, hinta)
 
-    ehdokkaat = [_yhdista_symboli(symboli, tieto) for symboli, tieto in tulokset.items()]
+    ehdokkaat = [
+        _yhdista_symboli(symboli, tieto) for symboli, tieto in tulokset.items()
+    ]
 
     ehdokkaat.sort(key=lambda e: e["pisteet"], reverse=True)
     ehdokkaat = ehdokkaat[:EHDOKAS_TAVOITE]

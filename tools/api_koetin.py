@@ -9,16 +9,46 @@ TIMEOUT = 10
 MAX_MERKKIA = 400
 
 FMP_PAATEPISTEET = [
-    ("senate-latest", "https://financialmodelingprep.com/stable/senate-latest?page=0&limit=10"),
-    ("house-latest", "https://financialmodelingprep.com/stable/house-latest?page=0&limit=10"),
-    ("grades-latest-news", "https://financialmodelingprep.com/stable/grades-latest-news?page=0&limit=10"),
-    ("grade-latest-news", "https://financialmodelingprep.com/stable/grade-latest-news?page=0&limit=10"),
-    ("price-target-latest-news", "https://financialmodelingprep.com/stable/price-target-latest-news?page=0&limit=10"),
-    ("insider-search-ilman", "https://financialmodelingprep.com/stable/insider-trading/search?page=0&limit=10"),
-    ("insider-search-ostot", "https://financialmodelingprep.com/stable/insider-trading/search?transactionType=P-Purchase&page=0&limit=10"),
-    ("senate-ostot", "https://financialmodelingprep.com/stable/senate-latest?page=0&limit=10&type=Purchase"),
-    ("insider-latest", "https://financialmodelingprep.com/stable/insider-trading/latest?page=0&limit=10"),
-    ("limit-testi-price-target-50", "https://financialmodelingprep.com/stable/price-target-latest-news?page=0&limit=50"),
+    (
+        "senate-latest",
+        "https://financialmodelingprep.com/stable/senate-latest?page=0&limit=10",
+    ),
+    (
+        "house-latest",
+        "https://financialmodelingprep.com/stable/house-latest?page=0&limit=10",
+    ),
+    (
+        "grades-latest-news",
+        "https://financialmodelingprep.com/stable/grades-latest-news?page=0&limit=10",
+    ),
+    (
+        "grade-latest-news",
+        "https://financialmodelingprep.com/stable/grade-latest-news?page=0&limit=10",
+    ),
+    (
+        "price-target-latest-news",
+        "https://financialmodelingprep.com/stable/price-target-latest-news?page=0&limit=10",
+    ),
+    (
+        "insider-search-ilman",
+        "https://financialmodelingprep.com/stable/insider-trading/search?page=0&limit=10",
+    ),
+    (
+        "insider-search-ostot",
+        "https://financialmodelingprep.com/stable/insider-trading/search?transactionType=P-Purchase&page=0&limit=10",
+    ),
+    (
+        "senate-ostot",
+        "https://financialmodelingprep.com/stable/senate-latest?page=0&limit=10&type=Purchase",
+    ),
+    (
+        "insider-latest",
+        "https://financialmodelingprep.com/stable/insider-trading/latest?page=0&limit=10",
+    ),
+    (
+        "limit-testi-price-target-50",
+        "https://financialmodelingprep.com/stable/price-target-latest-news?page=0&limit=50",
+    ),
 ]
 
 TWELVE_DATA_PAATEPISTEET = [
@@ -98,7 +128,9 @@ def _koeta(nimi: str, url: str, apikey: str):
             data = vastaus.json()
         except ValueError:
             teksti = vastaus.text[:MAX_MERKKIA]
-            print(f"Vastaus ei ole JSONia. Teksti (max {MAX_MERKKIA} merkkia): {teksti}")
+            print(
+                f"Vastaus ei ole JSONia. Teksti (max {MAX_MERKKIA} merkkia): {teksti}"
+            )
             return None
 
         if isinstance(data, list):
@@ -145,18 +177,25 @@ def _tulosta_suuntajakaumat(tulokset: dict) -> None:
         print(f"{nimi} ({kentta}): {dict(_jakauma(data, kentta))}")
 
 
-def _vertaa_paria(nimi_ilman: str, nimi_suodatettu: str, kentta: str, tulokset: dict) -> None:
+def _vertaa_paria(
+    nimi_ilman: str, nimi_suodatettu: str, kentta: str, tulokset: dict
+) -> None:
     print(f"\n--- {nimi_ilman} vs {nimi_suodatettu} (suuntakentta: {kentta}) ---")
 
     data_ilman = tulokset.get(nimi_ilman)
     data_suodatettu = tulokset.get(nimi_suodatettu)
 
     if not isinstance(data_ilman, list) or not isinstance(data_suodatettu, list):
-        print("Jompikumpi tai molemmat vastaukset puuttuvat (ei listaa) - vertailua ei voi tehda.")
+        print(
+            "Jompikumpi tai molemmat vastaukset puuttuvat (ei listaa) - "
+            "vertailua ei voi tehda."
+        )
         return
 
     if data_ilman == data_suodatettu:
-        print("HUOM: rivit ovat TASMALLEEN IDENTTISET -> suodatinparametri jai huomiotta.")
+        print(
+            "HUOM: rivit ovat TASMALLEEN IDENTTISET -> suodatinparametri jai huomiotta."
+        )
 
     symbolit_ilman = _symbolit(data_ilman)
     symbolit_suodatettu = _symbolit(data_suodatettu)
@@ -175,12 +214,17 @@ def _tulosta_quote_kentat(tulokset: dict, symbolit: list) -> None:
         data = tulokset.get(f"quote-{symboli}")
         print(f"\n{symboli}:")
         if not isinstance(data, dict):
-            print("  quote-vastaus puuttuu tai ei ole dict - ei voida tarkistaa kenttia")
+            print(
+                "  quote-vastaus puuttuu tai ei ole dict - ei voida tarkistaa kenttia"
+            )
             continue
         for kentta in QUOTE_TARKISTETTAVAT_KENTAT:
             print(f"  {kentta}: {data.get(kentta, '<PUUTTUU>')}")
-        print(f"  fifty_two_week (raaka arvo - ylla olevat 52vk-kentat saattavat olla")
-        print(f"  vaarin nimettyja, tama nayttaa oikean rakenteen): {data.get('fifty_two_week')!r}")
+        print("  fifty_two_week (raaka arvo - ylla olevat 52vk-kentat saattavat olla")
+        print(
+            "  vaarin nimettyja, tama nayttaa oikean rakenteen): "
+            f"{data.get('fifty_two_week')!r}"
+        )
 
 
 def _tulosta_sma200_tkno(tulokset: dict) -> None:
@@ -192,20 +236,28 @@ def _tulosta_sma200_tkno(tulokset: dict) -> None:
     if isinstance(data, dict) and data.get("status") == "error":
         print(f"sma200-TKNO palautti virheen: {data.get('message', data)}")
         return
-    if isinstance(data, dict) and isinstance(data.get("values"), list) and not data["values"]:
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("values"), list)
+        and not data["values"]
+    ):
         print("sma200-TKNO palautti tyhjan values-listan - ei riittavasti historiaa.")
         return
     print(f"sma200-TKNO nayttaa toimivan, koko vastaus: {data}")
 
 
 def _koeta_minuuttiraja(apikey: str) -> None:
-    print("\n########## Twelve Data minuuttiraja (12 perakkaista quote-kutsua) ##########")
+    print(
+        "\n########## Twelve Data minuuttiraja (12 perakkaista quote-kutsua) ##########"
+    )
     url = "https://api.twelvedata.com/quote"
     ensimmainen_virhe = None
 
     for i in range(1, 13):
         try:
-            vastaus = requests.get(url, params={"symbol": "AAPL", "apikey": apikey}, timeout=TIMEOUT)
+            vastaus = requests.get(
+                url, params={"symbol": "AAPL", "apikey": apikey}, timeout=TIMEOUT
+            )
             try:
                 data = vastaus.json()
             except ValueError:
@@ -239,7 +291,10 @@ def _tulosta_pe_analyysi(tulokset: dict, symbolit: list) -> None:
             if isinstance(data, list) and data:
                 rivi = data[0]
                 pe_avaimet = [avain for avain in rivi.keys() if "pe" in avain.lower()]
-                print(f"  {nimi}: {len(data)} rivia, mahdolliset P/E-avaimet: {pe_avaimet}")
+                print(
+                    f"  {nimi}: {len(data)} rivia, "
+                    f"mahdolliset P/E-avaimet: {pe_avaimet}"
+                )
                 for avain in pe_avaimet:
                     print(f"    {avain} = {rivi.get(avain)!r}")
             elif isinstance(data, dict):
@@ -267,10 +322,12 @@ def main() -> None:
 
     _tulosta_suuntajakaumat(tulokset)
 
-    # --- Kertaluontoinen suodatinvertailu: toimivatko transactionType/type -parametrit? ---
-    # Oma erillinen lohko - helppo poistaa myohemmin yhtena palana.
+    # --- Kertaluontoinen suodatinvertailu: toimivatko transactionType/type
+    # -parametrit? Oma erillinen lohko - helppo poistaa myohemmin yhtena palana. ---
     print("\n########## Suodatinvertailu (kertaluontoinen) ##########")
-    _vertaa_paria("insider-search-ilman", "insider-search-ostot", "transactionType", tulokset)
+    _vertaa_paria(
+        "insider-search-ilman", "insider-search-ostot", "transactionType", tulokset
+    )
     _vertaa_paria("senate-latest", "senate-ostot", "type", tulokset)
 
     # --- Vaihe 2a: Twelve Data -indikaattorit AAPL:lle ja TKNO:lle ---

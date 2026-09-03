@@ -8,7 +8,11 @@ from core.asetukset import MAX_POSITIOT, POSITION_KOKO, RR_KYNNYS
 
 
 def _pisteytys(symboli="AAPL", risk_reward_pisteet=8.0, hinta=100.0):
-    return {"symboli": symboli, "risk_reward_pisteet": risk_reward_pisteet, "hinta": hinta}
+    return {
+        "symboli": symboli,
+        "risk_reward_pisteet": risk_reward_pisteet,
+        "hinta": hinta,
+    }
 
 
 def _ehdokas(viiteostohinta=100.0, pisteet=5.0):
@@ -27,7 +31,9 @@ def _tila(aktiivisia=0, kateinen=10000.0, aktiiviset_symbolit=None):
 
 
 def test_hinta_puuttuu_hylkaa():
-    paatos, perustelu = paatoksentekija.paata_osto(_pisteytys(hinta=None), _ehdokas(), _tila())
+    paatos, perustelu = paatoksentekija.paata_osto(
+        _pisteytys(hinta=None), _ehdokas(), _tila()
+    )
 
     assert paatos == "hylatty"
     assert "hinta" in perustelu
@@ -66,8 +72,12 @@ def test_hinta_yli_viiteostohinnan_hylkaa():
 def test_hinta_alle_viiteostohinnan_hylkaa_eri_tekstilla():
     ehdokas = _ehdokas(viiteostohinta=100.0)
 
-    _, perustelu_alle = paatoksentekija.paata_osto(_pisteytys(hinta=92.0), ehdokas, _tila())
-    _, perustelu_yli = paatoksentekija.paata_osto(_pisteytys(hinta=108.0), ehdokas, _tila())
+    _, perustelu_alle = paatoksentekija.paata_osto(
+        _pisteytys(hinta=92.0), ehdokas, _tila()
+    )
+    _, perustelu_yli = paatoksentekija.paata_osto(
+        _pisteytys(hinta=108.0), ehdokas, _tila()
+    )
 
     assert "alle" in perustelu_alle
     assert "yli" in perustelu_yli
@@ -138,14 +148,21 @@ def test_aja_kapasiteetti_rajoittaa_ostot(tmp_path):
 
     for i in range(MAX_POSITIOT - 1):
         tietokanta.avaa_positio(
-            symboli=f"OLD{i}", ostohinta=10.0, panos_usd=POSITION_KOKO,
-            osto_ajo_id="aiempi", polku=polku,
+            symboli=f"OLD{i}",
+            ostohinta=10.0,
+            panos_usd=POSITION_KOKO,
+            osto_ajo_id="aiempi",
+            polku=polku,
         )
 
     for symboli in ("AAA", "BBB", "CCC"):
         tietokanta.lisaa_pisteytys(
-            ajo_id="ajo1", ajotyyppi="normaali", symboli=symboli,
-            risk_reward_pisteet=8.0, hinta=50.0, polku=polku,
+            ajo_id="ajo1",
+            ajotyyppi="normaali",
+            symboli=symboli,
+            risk_reward_pisteet=8.0,
+            hinta=50.0,
+            polku=polku,
         )
 
     paatoksentekija.aja("ajo1", "normaali", polku=polku)
@@ -167,15 +184,22 @@ def test_aja_kateinen_rajoittaa_ostot(tmp_path):
     # kokonaisarvon (1500 + 8500 = 10000) SALKUN_STOP_TASOn ylapuolella,
     # jotta testi mittaa nimenomaan kateisrajaa eika pysaytinta.
     tietokanta.avaa_positio(
-        symboli="OLD", ostohinta=100.0, panos_usd=8500.0,
-        osto_ajo_id="aiempi", polku=polku,
+        symboli="OLD",
+        ostohinta=100.0,
+        panos_usd=8500.0,
+        osto_ajo_id="aiempi",
+        polku=polku,
     )
     assert tietokanta.hae_kateinen(polku=polku) == 1500.0
 
     for symboli in ("AAA", "BBB"):
         tietokanta.lisaa_pisteytys(
-            ajo_id="ajo1", ajotyyppi="normaali", symboli=symboli,
-            risk_reward_pisteet=8.0, hinta=50.0, polku=polku,
+            ajo_id="ajo1",
+            ajotyyppi="normaali",
+            symboli=symboli,
+            risk_reward_pisteet=8.0,
+            hinta=50.0,
+            polku=polku,
         )
 
     paatoksentekija.aja("ajo1", "normaali", polku=polku)
@@ -195,20 +219,36 @@ def test_aja_jarjestyssaanto_rr_sitten_ehdokkaan_pisteet_sitten_aakkoset(tmp_pat
     # ketka kaksi neljasta ehdokkaasta ostetaan.
     for i in range(8):
         tietokanta.avaa_positio(
-            symboli=f"OLD{i}", ostohinta=10.0, panos_usd=POSITION_KOKO,
-            osto_ajo_id="aiempi", polku=polku,
+            symboli=f"OLD{i}",
+            ostohinta=10.0,
+            panos_usd=POSITION_KOKO,
+            osto_ajo_id="aiempi",
+            polku=polku,
         )
 
-    for symboli, pisteet in (("BETA", 10.0), ("ALFA", 10.0), ("GAMMA", 3.0), ("ZETA", 5.0)):
+    for symboli, pisteet in (
+        ("BETA", 10.0),
+        ("ALFA", 10.0),
+        ("GAMMA", 3.0),
+        ("ZETA", 5.0),
+    ):
         tietokanta.lisaa_ehdokas(
-            ajo_id="ajo1", ajotyyppi="normaali", symboli=symboli, lahde="analyytikko",
-            pisteet=pisteet, polku=polku,
+            ajo_id="ajo1",
+            ajotyyppi="normaali",
+            symboli=symboli,
+            lahde="analyytikko",
+            pisteet=pisteet,
+            polku=polku,
         )
 
     for symboli, rr in (("ZETA", 9.0), ("BETA", 8.0), ("ALFA", 8.0), ("GAMMA", 8.0)):
         tietokanta.lisaa_pisteytys(
-            ajo_id="ajo1", ajotyyppi="normaali", symboli=symboli,
-            risk_reward_pisteet=rr, hinta=50.0, polku=polku,
+            ajo_id="ajo1",
+            ajotyyppi="normaali",
+            symboli=symboli,
+            risk_reward_pisteet=rr,
+            hinta=50.0,
+            polku=polku,
         )
 
     paatoksentekija.aja("ajo1", "normaali", polku=polku)
@@ -236,8 +276,12 @@ def test_aja_salkun_stop_taso_estaa_kaikki_ostot(tmp_path):
 
     for symboli in ("AAA", "BBB"):
         tietokanta.lisaa_pisteytys(
-            ajo_id="ajo1", ajotyyppi="normaali", symboli=symboli,
-            risk_reward_pisteet=9.0, hinta=50.0, polku=polku,
+            ajo_id="ajo1",
+            ajotyyppi="normaali",
+            symboli=symboli,
+            risk_reward_pisteet=9.0,
+            hinta=50.0,
+            polku=polku,
         )
 
     paatoksentekija.aja("ajo1", "normaali", polku=polku)
@@ -264,8 +308,12 @@ def test_aja_tarkistus_ei_tee_paatoksia(tmp_path):
     tietokanta.alusta_tietokanta(polku)
 
     tietokanta.lisaa_pisteytys(
-        ajo_id="ajo1", ajotyyppi="tarkistus", symboli="AAPL",
-        risk_reward_pisteet=9.0, hinta=100.0, polku=polku,
+        ajo_id="ajo1",
+        ajotyyppi="tarkistus",
+        symboli="AAPL",
+        risk_reward_pisteet=9.0,
+        hinta=100.0,
+        polku=polku,
     )
 
     tulos = paatoksentekija.aja("ajo1", "tarkistus", polku=polku)
@@ -281,8 +329,12 @@ def test_aja_jokaisesta_pisteytyksesta_syntyy_tasan_yksi_paatos(tmp_path):
     symbolit = ["AAA", "BBB", "CCC", "DDD"]
     for symboli in symbolit:
         tietokanta.lisaa_pisteytys(
-            ajo_id="ajo1", ajotyyppi="normaali", symboli=symboli,
-            risk_reward_pisteet=5.0, hinta=50.0, polku=polku,
+            ajo_id="ajo1",
+            ajotyyppi="normaali",
+            symboli=symboli,
+            risk_reward_pisteet=5.0,
+            hinta=50.0,
+            polku=polku,
         )  # alle RR_KYNNYS -> hylatty, mutta paatos kirjataan silti
 
     paatoksentekija.aja("ajo1", "normaali", polku=polku)
@@ -301,7 +353,11 @@ def test_avaa_positio_onnistuu_ja_vahentaa_kateisen(tmp_path):
     alku_kateinen = tietokanta.hae_kateinen(polku=polku)
 
     positio_id = tietokanta.avaa_positio(
-        symboli="AAPL", ostohinta=50.0, panos_usd=1000.0, osto_ajo_id="ajo1", polku=polku
+        symboli="AAPL",
+        ostohinta=50.0,
+        panos_usd=1000.0,
+        osto_ajo_id="ajo1",
+        polku=polku,
     )
 
     assert positio_id > 0
@@ -325,8 +381,11 @@ def test_avaa_positio_liian_vahan_kateista(tmp_path):
 
     with pytest.raises(ValueError):
         tietokanta.avaa_positio(
-            symboli="AAPL", ostohinta=50.0, panos_usd=1_000_000.0,
-            osto_ajo_id="ajo1", polku=polku,
+            symboli="AAPL",
+            ostohinta=50.0,
+            panos_usd=1_000_000.0,
+            osto_ajo_id="ajo1",
+            polku=polku,
         )
 
     yhteys = tietokanta.avaa_yhteys(polku)
@@ -343,14 +402,21 @@ def test_avaa_positio_kaksoisosto_nostaa_integrityerrorin(tmp_path):
     tietokanta.alusta_tietokanta(polku)
 
     tietokanta.avaa_positio(
-        symboli="AAPL", ostohinta=50.0, panos_usd=1000.0, osto_ajo_id="ajo1", polku=polku
+        symboli="AAPL",
+        ostohinta=50.0,
+        panos_usd=1000.0,
+        osto_ajo_id="ajo1",
+        polku=polku,
     )
     kateinen_ekan_jalkeen = tietokanta.hae_kateinen(polku=polku)
 
     with pytest.raises(sqlite3.IntegrityError):
         tietokanta.avaa_positio(
-            symboli="AAPL", ostohinta=60.0, panos_usd=1000.0,
-            osto_ajo_id="ajo2", polku=polku,
+            symboli="AAPL",
+            ostohinta=60.0,
+            panos_usd=1000.0,
+            osto_ajo_id="ajo2",
+            polku=polku,
         )
 
     assert tietokanta.hae_kateinen(polku=polku) == kateinen_ekan_jalkeen

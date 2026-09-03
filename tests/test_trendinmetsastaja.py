@@ -9,8 +9,18 @@ from core import tietokanta
 from core.asetukset import EHDOKAS_KYNNYS, VALITTAVAT
 
 SYMBOLIT_12 = [
-    "AAAA", "BBBB", "CCCC", "DDDD", "EEEE", "FFFF",
-    "GGGG", "HHHH", "IIII", "JJJJ", "KKKK", "LLLL",
+    "AAAA",
+    "BBBB",
+    "CCCC",
+    "DDDD",
+    "EEEE",
+    "FFFF",
+    "GGGG",
+    "HHHH",
+    "IIII",
+    "JJJJ",
+    "KKKK",
+    "LLLL",
 ]
 US_SYMBOLIT = {"AAPL", "MSFT", "TSLA", "GOOGL", "NVDA", "LILAK"} | set(SYMBOLIT_12)
 
@@ -40,7 +50,9 @@ def _analyytikkorivi(
     }
 
 
-def _kongressirivi(symboli, tyyppi="Purchase", amount="$100,001 - $250,000", paivia_sitten=5):
+def _kongressirivi(
+    symboli, tyyppi="Purchase", amount="$100,001 - $250,000", paivia_sitten=5
+):
     pvm = (date.today() - timedelta(days=paivia_sitten)).isoformat()
     return {
         "symbol": symboli,
@@ -61,7 +73,9 @@ def _kongressirivi(symboli, tyyppi="Purchase", amount="$100,001 - $250,000", pai
     }
 
 
-def _sisapiirirvi(symboli, suunta="P-Purchase", maara=2000, hinta=30.0, paivia_sitten=5):
+def _sisapiirirvi(
+    symboli, suunta="P-Purchase", maara=2000, hinta=30.0, paivia_sitten=5
+):
     pvm = (date.today() - timedelta(days=paivia_sitten)).isoformat()
     return {
         "symbol": symboli,
@@ -83,7 +97,9 @@ def _sisapiirirvi(symboli, suunta="P-Purchase", maara=2000, hinta=30.0, paivia_s
     }
 
 
-def _tavoitehintarivi(symboli, tavoite=120.0, nykyhinta=100.0, paivia_sitten=2, yhtio="Citigroup"):
+def _tavoitehintarivi(
+    symboli, tavoite=120.0, nykyhinta=100.0, paivia_sitten=2, yhtio="Citigroup"
+):
     pvm = datetime.now(timezone.utc) - timedelta(days=paivia_sitten)
     return {
         "symbol": symboli,
@@ -133,7 +149,9 @@ def test_kelvoton_symboli_suodattuu_pois():
         _analyytikkorivi("AAPL"),
     ]
 
-    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(analyytikko, [], [], [], [], US_SYMBOLIT)
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        analyytikko, [], [], [], [], US_SYMBOLIT
+    )
 
     assert {e["symboli"] for e in ehdokkaat} == {"AAPL"}
 
@@ -146,7 +164,9 @@ def test_kongressimyynti_suodattuu_pois():
         _kongressirivi("NVDA", tyyppi="Exchange"),
     ]
 
-    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat([], kongressi, [], [], [], US_SYMBOLIT)
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        [], kongressi, [], [], [], US_SYMBOLIT
+    )
 
     assert {e["symboli"] for e in ehdokkaat} == {"AAPL"}
 
@@ -157,7 +177,9 @@ def test_sisapiirimyynti_suodattuu_pois_osto_ei():
         _sisapiirirvi("MSFT", suunta="S-Sale"),
     ]
 
-    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat([], [], sisapiiri, [], [], US_SYMBOLIT)
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        [], [], sisapiiri, [], [], US_SYMBOLIT
+    )
 
     assert {e["symboli"] for e in ehdokkaat} == {"AAPL"}
 
@@ -294,15 +316,21 @@ def test_ohita_symbolit_suodattuu_pois():
 def test_symboli_joka_ei_ole_us_symbolit_joukossa_suodattuu_pois():
     analyytikko = [_analyytikkorivi("AAPL")]
 
-    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(analyytikko, [], [], [], [], {"MSFT"})
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        analyytikko, [], [], [], [], {"MSFT"}
+    )
 
     assert ehdokkaat == []
 
 
 def test_downgrade_ei_paady_ehdokkaaksi():
-    analyytikko = [_analyytikkorivi("AAPL", action="downgrade", uusi="Hold", edellinen="Buy")]
+    analyytikko = [
+        _analyytikkorivi("AAPL", action="downgrade", uusi="Hold", edellinen="Buy")
+    ]
 
-    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(analyytikko, [], [], [], [], US_SYMBOLIT)
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        analyytikko, [], [], [], [], US_SYMBOLIT
+    )
 
     assert ehdokkaat == []
 
@@ -311,7 +339,9 @@ def test_yli_14_vrk_analyytikkorivi_hylataan_13_vrk_ei():
     vanha = [_analyytikkorivi("AAPL", paivia_sitten=15)]
     tuore = [_analyytikkorivi("AAPL", paivia_sitten=13)]
 
-    assert trendinmetsastaja.muodosta_ehdokkaat(vanha, [], [], [], [], US_SYMBOLIT) == []
+    assert (
+        trendinmetsastaja.muodosta_ehdokkaat(vanha, [], [], [], [], US_SYMBOLIT) == []
+    )
 
     ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(tuore, [], [], [], [], US_SYMBOLIT)
     assert {e["symboli"] for e in ehdokkaat} == {"AAPL"}
@@ -319,9 +349,14 @@ def test_yli_14_vrk_analyytikkorivi_hylataan_13_vrk_ei():
 
 def test_jarjestys_upgrade_yli_initialise_yli_hold():
     hold_rivi = [_analyytikkorivi("AAPL", uusi="Buy", edellinen="Buy", action="hold")]
-    upgrade_rivi = [_analyytikkorivi("MSFT", uusi="Buy", edellinen="Neutral", action="upgrade")]
+    upgrade_rivi = [
+        _analyytikkorivi("MSFT", uusi="Buy", edellinen="Neutral", action="upgrade")
+    ]
     initialise_rivi = [
-        {**_analyytikkorivi("TSLA", uusi="Buy", action="initialise"), "previousGrade": None}
+        {
+            **_analyytikkorivi("TSLA", uusi="Buy", action="initialise"),
+            "previousGrade": None,
+        }
     ]
 
     hold_ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
@@ -340,7 +375,12 @@ def test_jarjestys_upgrade_yli_initialise_yli_hold():
 
 
 def test_initialise_plus_buy_saa_4_pistetta():
-    rivi = [{**_analyytikkorivi("AAPL", uusi="Buy", action="initialise"), "previousGrade": None}]
+    rivi = [
+        {
+            **_analyytikkorivi("AAPL", uusi="Buy", action="initialise"),
+            "previousGrade": None,
+        }
+    ]
 
     ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(rivi, [], [], [], [], US_SYMBOLIT)
 
@@ -349,7 +389,10 @@ def test_initialise_plus_buy_saa_4_pistetta():
 
 def test_initialise_plus_neutral_saa_2_pistetta():
     rivi = [
-        {**_analyytikkorivi("AAPL", uusi="Neutral", action="initialise"), "previousGrade": None}
+        {
+            **_analyytikkorivi("AAPL", uusi="Neutral", action="initialise"),
+            "previousGrade": None,
+        }
     ]
 
     ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(rivi, [], [], [], [], US_SYMBOLIT)
@@ -358,7 +401,12 @@ def test_initialise_plus_neutral_saa_2_pistetta():
 
 
 def test_initialise_perustelu_ei_kayta_previousgradea():
-    rivi = [{**_analyytikkorivi("AAPL", uusi="Buy", action="initialise"), "previousGrade": None}]
+    rivi = [
+        {
+            **_analyytikkorivi("AAPL", uusi="Buy", action="initialise"),
+            "previousGrade": None,
+        }
+    ]
 
     ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(rivi, [], [], [], [], US_SYMBOLIT)
 
@@ -374,7 +422,9 @@ def test_tuntematon_action_ei_kaada_saa_yhden_pisteen_ja_varoituksen(monkeypatch
         trendinmetsastaja._loki, "warning", lambda viesti: varoitukset.append(viesti)
     )
 
-    rivi = [_analyytikkorivi("AAPL", uusi="Hold", edellinen="Hold", action="reiterated")]
+    rivi = [
+        _analyytikkorivi("AAPL", uusi="Hold", edellinen="Hold", action="reiterated")
+    ]
 
     ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(rivi, [], [], [], [], US_SYMBOLIT)
 
@@ -396,7 +446,8 @@ def test_kongressirivi_ilman_amountia_ja_tuoretta_pvm_saa_yhden_pisteen():
 
 def test_toistuvuusbonus_on_korkeintaan_3_ja_pohja_on_paras_yksittainen_rivi():
     rivit = [
-        _kongressirivi("AAPL", amount="$1,001 - $15,000", paivia_sitten=90) for _ in range(10)
+        _kongressirivi("AAPL", amount="$1,001 - $15,000", paivia_sitten=90)
+        for _ in range(10)
     ]
     # Yksi rivi selvasti paremmalla pisteytyksella (tuore, iso summa).
     rivit[3] = _kongressirivi("AAPL", amount="$100,001 - $250,000", paivia_sitten=5)
@@ -409,7 +460,7 @@ def test_toistuvuusbonus_on_korkeintaan_3_ja_pohja_on_paras_yksittainen_rivi():
     assert ehdokkaat[0]["pisteet"] == 5 + 3
 
 
-def test_yksi_analyytikko_ja_yksi_kongressirivi_saa_yhteisesiintymabonuksen_mutta_ei_toistuvuutta():
+def test_yksi_analyytikko_ja_yksi_kongressirivi_saa_yhteisesiintymabonuksen_mutta_ei_toistuvuutta():  # noqa: E501
     analyytikko = [_analyytikkorivi("AAPL")]
     kongressi = [_kongressirivi("AAPL")]
 
@@ -436,7 +487,8 @@ def test_symboli_kolmessa_lahteessa_saa_yhteisesiintymabonuksen_tasan_kerran():
 
     aapl = ehdokkaat[0]
     assert aapl["lahde"] == "molemmat"
-    # analyytikko 5 + kongressi 5 + sisapiiri (osto(1)+arvo60000>=50000(2)+tuore5vrk(2)=5)
+    # analyytikko 5 + kongressi 5 + sisapiiri
+    # (osto(1)+arvo60000>=50000(2)+tuore5vrk(2)=5)
     # yhteisesiintyma +3 TASAN KERRAN (ei kolmesti), toistuvuus 0
     assert aapl["pisteet"] == 5 + 5 + 5 + 3
 
@@ -444,15 +496,21 @@ def test_symboli_kolmessa_lahteessa_saa_yhteisesiintymabonuksen_tasan_kerran():
 def test_symboli_vain_yhdessa_lahteessa_ei_saa_bonusta():
     analyytikko = [_analyytikkorivi("AAPL")]
 
-    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(analyytikko, [], [], [], [], US_SYMBOLIT)
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        analyytikko, [], [], [], [], US_SYMBOLIT
+    )
 
     assert ehdokkaat[0]["lahde"] == "analyytikko"
     assert ehdokkaat[0]["pisteet"] == 5
 
 
 def test_bonus_kun_molemmat_lahteet_yltavat_yhteisesiintymakynnykseen():
-    analyytikko = [_analyytikkorivi("AAPL", uusi="Buy", edellinen="Buy", action="hold")]  # 3p
-    tavoitehinta = [_tavoitehintarivi("AAPL", tavoite=130.0, nykyhinta=100.0)]  # +30 % -> 3p
+    analyytikko = [
+        _analyytikkorivi("AAPL", uusi="Buy", edellinen="Buy", action="hold")
+    ]  # 3p
+    tavoitehinta = [
+        _tavoitehintarivi("AAPL", tavoite=130.0, nykyhinta=100.0)
+    ]  # +30 % -> 3p
 
     ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
         analyytikko, [], [], tavoitehinta, [], US_SYMBOLIT
@@ -467,9 +525,14 @@ def test_ei_bonusta_kun_molemmat_lahteet_alle_kynnyksen_lilak_tapaus():
     # LILAK-tapaus: initialise+Neutral (2p) ja +2 % tavoite (1p) - kumpikaan
     # ei ole aito ostosignaali, joten bonusta ei pida antaa.
     analyytikko = [
-        {**_analyytikkorivi("LILAK", uusi="Neutral", action="initialise"), "previousGrade": None}
+        {
+            **_analyytikkorivi("LILAK", uusi="Neutral", action="initialise"),
+            "previousGrade": None,
+        }
     ]
-    tavoitehinta = [_tavoitehintarivi("LILAK", tavoite=102.0, nykyhinta=100.0)]  # +2 % -> 1p
+    tavoitehinta = [
+        _tavoitehintarivi("LILAK", tavoite=102.0, nykyhinta=100.0)
+    ]  # +2 % -> 1p
 
     ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
         analyytikko, [], [], tavoitehinta, [], US_SYMBOLIT
@@ -481,8 +544,12 @@ def test_ei_bonusta_kun_molemmat_lahteet_alle_kynnyksen_lilak_tapaus():
 
 
 def test_ei_bonusta_kun_vain_yksi_lahde_yltaa_kynnykseen():
-    analyytikko = [_analyytikkorivi("AAPL", uusi="Buy", edellinen="Buy", action="hold")]  # 3p
-    tavoitehinta = [_tavoitehintarivi("AAPL", tavoite=102.0, nykyhinta=100.0)]  # +2 % -> 1p
+    analyytikko = [
+        _analyytikkorivi("AAPL", uusi="Buy", edellinen="Buy", action="hold")
+    ]  # 3p
+    tavoitehinta = [
+        _tavoitehintarivi("AAPL", tavoite=102.0, nykyhinta=100.0)
+    ]  # +2 % -> 1p
 
     ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
         analyytikko, [], [], tavoitehinta, [], US_SYMBOLIT
@@ -494,8 +561,12 @@ def test_ei_bonusta_kun_vain_yksi_lahde_yltaa_kynnykseen():
 
 
 def test_kolme_lahdetta_joista_kaksi_yltaa_kynnykseen_saa_bonuksen_kerran():
-    analyytikko = [_analyytikkorivi("AAPL", uusi="Buy", edellinen="Buy", action="hold")]  # 3p
-    tavoitehinta = [_tavoitehintarivi("AAPL", tavoite=102.0, nykyhinta=100.0)]  # 1p (heikko)
+    analyytikko = [
+        _analyytikkorivi("AAPL", uusi="Buy", edellinen="Buy", action="hold")
+    ]  # 3p
+    tavoitehinta = [
+        _tavoitehintarivi("AAPL", tavoite=102.0, nykyhinta=100.0)
+    ]  # 1p (heikko)
     sisapiiri = [_sisapiirirvi("AAPL")]  # osto(1)+arvo>=50000(2)+tuore<30vrk(2) = 5p
 
     ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
@@ -510,9 +581,13 @@ def test_kolme_lahdetta_joista_kaksi_yltaa_kynnykseen_saa_bonuksen_kerran():
 
 
 def test_kynnyksen_alle_jaava_ehdokas_saa_jatkoon_nolla():
-    matala = [_analyytikkorivi("AAPL", uusi="Hold", edellinen="Hold", action="hold")]  # 1 piste
+    matala = [
+        _analyytikkorivi("AAPL", uusi="Hold", edellinen="Hold", action="hold")
+    ]  # 1 piste
 
-    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(matala, [], [], [], [], US_SYMBOLIT)
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        matala, [], [], [], [], US_SYMBOLIT
+    )
 
     assert len(ehdokkaat) == 1
     assert ehdokkaat[0]["pisteet"] < EHDOKAS_KYNNYS
@@ -525,7 +600,9 @@ def test_jos_yksikaan_ei_ylita_kynnysta_jatkoon_on_tyhja():
         _analyytikkorivi("BBBB", uusi="Hold", edellinen="Hold", action="hold"),
     ]
 
-    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(matala, [], [], [], [], US_SYMBOLIT)
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        matala, [], [], [], [], US_SYMBOLIT
+    )
 
     assert len(ehdokkaat) == 2
     assert all(e["jatkoon"] == 0 for e in ehdokkaat)
@@ -573,7 +650,9 @@ def test_viiteostohinta_ei_tule_sisapiirilahteesta():
 
 def test_viiteostohinta_valitaan_vahvimmasta_lahteesta():
     analyytikko = [_analyytikkorivi("AAPL", hinta=100.0)]  # upgrade+Buy = 5p
-    tavoitehinta = [_tavoitehintarivi("AAPL", tavoite=102.0, nykyhinta=200.0)]  # +2 % = 1p
+    tavoitehinta = [
+        _tavoitehintarivi("AAPL", tavoite=102.0, nykyhinta=200.0)
+    ]  # +2 % = 1p
 
     ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
         analyytikko, [], [], tavoitehinta, [], US_SYMBOLIT
@@ -587,7 +666,9 @@ def test_viiteostohinta_tasapisteissa_lahteet_jarjestys_ratkaisee():
     # on ("analyytikko", "kongressi", "sisapiiri", "tavoitehinta"), joten
     # analyytikko voittaa.
     analyytikko = [
-        _analyytikkorivi("AAPL", uusi="Buy", edellinen="Buy", action="hold", hinta=111.0)
+        _analyytikkorivi(
+            "AAPL", uusi="Buy", edellinen="Buy", action="hold", hinta=111.0
+        )
     ]
     tavoitehinta = [_tavoitehintarivi("AAPL", tavoite=130.0, nykyhinta=222.0)]
 
@@ -629,8 +710,13 @@ def test_priceWhenPosted_nolla_tai_negatiivinen_ei_tuota_viiteostohintaa():
     nolla = [_analyytikkorivi("AAAA", hinta=0.0)]
     negatiivinen = [_analyytikkorivi("BBBB", hinta=-10.0)]
 
-    assert trendinmetsastaja.muodosta_ehdokkaat(nolla, [], [], [], [], US_SYMBOLIT) == []
-    assert trendinmetsastaja.muodosta_ehdokkaat(negatiivinen, [], [], [], [], US_SYMBOLIT) == []
+    assert (
+        trendinmetsastaja.muodosta_ehdokkaat(nolla, [], [], [], [], US_SYMBOLIT) == []
+    )
+    assert (
+        trendinmetsastaja.muodosta_ehdokkaat(negatiivinen, [], [], [], [], US_SYMBOLIT)
+        == []
+    )
 
 
 def test_poimi_hinta_puolustava_kasittely():
@@ -650,7 +736,9 @@ def test_poimi_hinta_puolustava_kasittely():
 def test_viiteostohinta_toistuvista_riveista_tulee_parhaasta_rivista():
     rivit = [
         _analyytikkorivi("AAPL", uusi="Neutral", action="hold", hinta=50.0),  # 1p
-        _analyytikkorivi("AAPL", uusi="Buy", action="upgrade", hinta=222.0),  # 5p - paras
+        _analyytikkorivi(
+            "AAPL", uusi="Buy", action="upgrade", hinta=222.0
+        ),  # 5p - paras
         _analyytikkorivi("AAPL", uusi="Hold", action="hold", hinta=10.0),  # 1p
     ]
 
@@ -683,9 +771,13 @@ def test_aja_normaali_yli_valittavat_maaran(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
     tietokanta.alusta_tietokanta(polku)
 
-    analyytikko = [_analyytikkorivi(s, paivia_sitten=i) for i, s in enumerate(SYMBOLIT_12)]
+    analyytikko = [
+        _analyytikkorivi(s, paivia_sitten=i) for i, s in enumerate(SYMBOLIT_12)
+    ]
 
-    monkeypatch.setattr(trendinmetsastaja, "hae_analyytikkomuutokset", lambda: analyytikko)
+    monkeypatch.setattr(
+        trendinmetsastaja, "hae_analyytikkomuutokset", lambda: analyytikko
+    )
     monkeypatch.setattr(trendinmetsastaja, "hae_kongressikaupat", lambda: [])
     monkeypatch.setattr(trendinmetsastaja, "hae_sisapiirikaupat", lambda: [])
     monkeypatch.setattr(trendinmetsastaja, "hae_tavoitehinnat", lambda: [])
@@ -712,7 +804,9 @@ def test_aja_normaali_alle_valittavat_maaran(tmp_path, monkeypatch):
     symbolit = ["AAAA", "BBBB", "CCCC"]
     analyytikko = [_analyytikkorivi(s) for s in symbolit]
 
-    monkeypatch.setattr(trendinmetsastaja, "hae_analyytikkomuutokset", lambda: analyytikko)
+    monkeypatch.setattr(
+        trendinmetsastaja, "hae_analyytikkomuutokset", lambda: analyytikko
+    )
     monkeypatch.setattr(trendinmetsastaja, "hae_kongressikaupat", lambda: [])
     monkeypatch.setattr(trendinmetsastaja, "hae_sisapiirikaupat", lambda: [])
     monkeypatch.setattr(trendinmetsastaja, "hae_tavoitehinnat", lambda: [])
@@ -729,7 +823,9 @@ def test_kynnyksen_alle_jaava_ehdokas_tallentuu_mutta_ei_jatkoon(tmp_path, monke
     polku = tmp_path / "testi.db"
     tietokanta.alusta_tietokanta(polku)
 
-    matala = [_analyytikkorivi("AAAA", uusi="Hold", edellinen="Hold", action="hold")]  # 1 piste
+    matala = [
+        _analyytikkorivi("AAAA", uusi="Hold", edellinen="Hold", action="hold")
+    ]  # 1 piste
 
     monkeypatch.setattr(trendinmetsastaja, "hae_analyytikkomuutokset", lambda: matala)
     monkeypatch.setattr(trendinmetsastaja, "hae_kongressikaupat", lambda: [])
@@ -750,7 +846,9 @@ def test_pisteet_tallentuvat_tietokantaan(tmp_path, monkeypatch):
 
     analyytikko = [_analyytikkorivi("AAPL")]  # upgrade(3) + Buy(2) = 5 pistetta
 
-    monkeypatch.setattr(trendinmetsastaja, "hae_analyytikkomuutokset", lambda: analyytikko)
+    monkeypatch.setattr(
+        trendinmetsastaja, "hae_analyytikkomuutokset", lambda: analyytikko
+    )
     monkeypatch.setattr(trendinmetsastaja, "hae_kongressikaupat", lambda: [])
     monkeypatch.setattr(trendinmetsastaja, "hae_sisapiirikaupat", lambda: [])
     monkeypatch.setattr(trendinmetsastaja, "hae_tavoitehinnat", lambda: [])
@@ -768,7 +866,9 @@ def test_aja_normaali_keskeytyy_jos_us_symbolit_haku_epaonnistuu(tmp_path, monke
     tietokanta.alusta_tietokanta(polku)
 
     monkeypatch.setattr(
-        trendinmetsastaja, "hae_analyytikkomuutokset", lambda: [_analyytikkorivi("AAPL")]
+        trendinmetsastaja,
+        "hae_analyytikkomuutokset",
+        lambda: [_analyytikkorivi("AAPL")],
     )
     monkeypatch.setattr(trendinmetsastaja, "hae_kongressikaupat", lambda: [])
     monkeypatch.setattr(trendinmetsastaja, "hae_sisapiirikaupat", lambda: [])
@@ -830,14 +930,22 @@ def _kirjoita_symbolilista_valimuistiin(valimuisti_dir, symbolit, paivia_sitten)
     tiedosto.write_text(json.dumps(sorted(symbolit)), encoding="utf-8")
 
 
-def test_symbolilista_tuore_valimuisti_kaytetaan_ilman_verkkokutsua(tmp_path, monkeypatch):
+def test_symbolilista_tuore_valimuisti_kaytetaan_ilman_verkkokutsua(
+    tmp_path, monkeypatch
+):
     valimuisti_dir = tmp_path / "valimuisti"
     monkeypatch.setattr(trendinmetsastaja, "VALIMUISTI_DIR", valimuisti_dir)
-    monkeypatch.setattr(trendinmetsastaja, "hae_twelve_data_avain", lambda: "testiavain")
-    _kirjoita_symbolilista_valimuistiin(valimuisti_dir, {"AAPL", "MSFT"}, paivia_sitten=5)
+    monkeypatch.setattr(
+        trendinmetsastaja, "hae_twelve_data_avain", lambda: "testiavain"
+    )
+    _kirjoita_symbolilista_valimuistiin(
+        valimuisti_dir, {"AAPL", "MSFT"}, paivia_sitten=5
+    )
 
     def _ei_saa_kutsua(*args, **kwargs):
-        raise AssertionError("verkkokutsua ei saa tehda kun 30 vrk:n valimuisti on tuore")
+        raise AssertionError(
+            "verkkokutsua ei saa tehda kun 30 vrk:n valimuisti on tuore"
+        )
 
     monkeypatch.setattr(trendinmetsastaja.requests, "get", _ei_saa_kutsua)
 
@@ -846,10 +954,14 @@ def test_symbolilista_tuore_valimuisti_kaytetaan_ilman_verkkokutsua(tmp_path, mo
     assert symbolit == {"AAPL", "MSFT"}
 
 
-def test_symbolilista_haku_epaonnistuu_eika_valimuistia_ole_keskeytyy(tmp_path, monkeypatch):
+def test_symbolilista_haku_epaonnistuu_eika_valimuistia_ole_keskeytyy(
+    tmp_path, monkeypatch
+):
     valimuisti_dir = tmp_path / "valimuisti"
     monkeypatch.setattr(trendinmetsastaja, "VALIMUISTI_DIR", valimuisti_dir)
-    monkeypatch.setattr(trendinmetsastaja, "hae_twelve_data_avain", lambda: "testiavain")
+    monkeypatch.setattr(
+        trendinmetsastaja, "hae_twelve_data_avain", lambda: "testiavain"
+    )
 
     def _kaadu(*args, **kwargs):
         raise requests.exceptions.Timeout("simuloitu aikakatkaisu")
@@ -863,7 +975,9 @@ def test_symbolilista_haku_epaonnistuu_eika_valimuistia_ole_keskeytyy(tmp_path, 
 def test_symbolilista_40_vrk_vanhaa_ei_kayteta_varajarjestelmana(tmp_path, monkeypatch):
     valimuisti_dir = tmp_path / "valimuisti"
     monkeypatch.setattr(trendinmetsastaja, "VALIMUISTI_DIR", valimuisti_dir)
-    monkeypatch.setattr(trendinmetsastaja, "hae_twelve_data_avain", lambda: "testiavain")
+    monkeypatch.setattr(
+        trendinmetsastaja, "hae_twelve_data_avain", lambda: "testiavain"
+    )
     _kirjoita_symbolilista_valimuistiin(valimuisti_dir, {"AAPL"}, paivia_sitten=40)
 
     def _kaadu(*args, **kwargs):
