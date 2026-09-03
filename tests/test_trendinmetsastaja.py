@@ -6,7 +6,7 @@ import requests
 
 from agents import trendinmetsastaja
 from core import tietokanta
-from core.asetukset import EHDOKAS_KYNNYS, VALITTAVAT
+from core.asetukset import CANDIDATE_THRESHOLD, MAX_SELECTED
 
 SYMBOLIT_12 = [
     "AAAA",
@@ -590,7 +590,7 @@ def test_kynnyksen_alle_jaava_ehdokas_saa_jatkoon_nolla():
     )
 
     assert len(ehdokkaat) == 1
-    assert ehdokkaat[0]["pisteet"] < EHDOKAS_KYNNYS
+    assert ehdokkaat[0]["pisteet"] < CANDIDATE_THRESHOLD
     assert ehdokkaat[0]["jatkoon"] == 0
 
 
@@ -638,7 +638,7 @@ def test_viiteostohinta_puuttuu_pelkasta_kongressirivista():
 def test_viiteostohinta_ei_tule_sisapiirilahteesta():
     # Tarkoituksellinen rajaus: _pisteyta_sisapiirirvi():lla ei ole
     # ylaikarajaa (vain ika-perusteiset pisteet), joten sen hinta voi olla
-    # mielivaltaisen vanha - huono vertailukohta MAX_HINTAPOIKKEAMAlle. Ala
+    # mielivaltaisen vanha - huono vertailukohta MAX_PRICE_DRIFTille. Ala
     # "korjaa" tata lisaamatta samalla hinnan ikaa ja skaalattua toleranssia
     # (ks. CLAUDE.md, Agentti 1).
     rivi = [_sisapiirirvi("AAPL", hinta=200.0)]
@@ -704,7 +704,7 @@ def test_viiteostohinta_puuttuu_tai_jasentymaton_ei_vaikuta_pisteisiin():
 
 
 def test_priceWhenPosted_nolla_tai_negatiivinen_ei_tuota_viiteostohintaa():
-    # priceWhenPosted <= 0 hylkaa koko rivin jo MIN_OSAKEKURSSI-tarkistuksessa
+    # priceWhenPosted <= 0 hylkaa koko rivin jo MIN_SHARE_PRICE-tarkistuksessa
     # (_hinta_liian_matala), ennen kuin viiteostohintaa edes poimitaan -
     # rivi ei siis paady ehdokkaaksi lainkaan, ei vain ilman hintaa.
     nolla = [_analyytikkorivi("AAAA", hinta=0.0)]
@@ -769,7 +769,7 @@ def test_regressio_pisteet_lahde_syy_muuttumattomia_monilahdetapauksessa():
 
 def test_aja_normaali_yli_valittavat_maaran(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
     analyytikko = [
         _analyytikkorivi(s, paivia_sitten=i) for i, s in enumerate(SYMBOLIT_12)
@@ -785,21 +785,21 @@ def test_aja_normaali_yli_valittavat_maaran(tmp_path, monkeypatch):
 
     trendinmetsastaja.aja("ajo1", "normaali", polku=polku)
 
-    rivit = tietokanta.hae_ehdokkaat("ajo1", vain_jatkoon=False, polku=polku)
+    rivit = tietokanta.get_candidates("ajo1", advanced_only=False, db_path=polku)
     assert len(rivit) == len(SYMBOLIT_12)
 
-    sijoitukset = sorted(rivi["sijoitus"] for rivi in rivit)
+    sijoitukset = sorted(rivi["rank"] for rivi in rivit)
     assert sijoitukset == list(range(1, len(SYMBOLIT_12) + 1))
 
     # Kaikki 12 ehdokasta ylittavat kynnyksen (upgrade+Buy=5), joten
-    # jatkoon rajautuu VALITTAVAT:iin.
-    jatkoon_maara = sum(1 for rivi in rivit if rivi["jatkoon"] == 1)
-    assert jatkoon_maara == VALITTAVAT
+    # jatkoon rajautuu MAX_SELECTED:iin.
+    jatkoon_maara = sum(1 for rivi in rivit if rivi["advanced"] == 1)
+    assert jatkoon_maara == MAX_SELECTED
 
 
 def test_aja_normaali_alle_valittavat_maaran(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
     symbolit = ["AAAA", "BBBB", "CCCC"]
     analyytikko = [_analyytikkorivi(s) for s in symbolit]
@@ -814,14 +814,14 @@ def test_aja_normaali_alle_valittavat_maaran(tmp_path, monkeypatch):
 
     trendinmetsastaja.aja("ajo2", "normaali", polku=polku)
 
-    rivit = tietokanta.hae_ehdokkaat("ajo2", vain_jatkoon=False, polku=polku)
+    rivit = tietokanta.get_candidates("ajo2", advanced_only=False, db_path=polku)
     assert len(rivit) == 3
-    assert all(rivi["jatkoon"] == 1 for rivi in rivit)
+    assert all(rivi["advanced"] == 1 for rivi in rivit)
 
 
 def test_kynnyksen_alle_jaava_ehdokas_tallentuu_mutta_ei_jatkoon(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
     matala = [
         _analyytikkorivi("AAAA", uusi="Hold", edellinen="Hold", action="hold")
@@ -835,14 +835,14 @@ def test_kynnyksen_alle_jaava_ehdokas_tallentuu_mutta_ei_jatkoon(tmp_path, monke
 
     trendinmetsastaja.aja("ajoK", "normaali", polku=polku)
 
-    rivit = tietokanta.hae_ehdokkaat("ajoK", vain_jatkoon=False, polku=polku)
+    rivit = tietokanta.get_candidates("ajoK", advanced_only=False, db_path=polku)
     assert len(rivit) == 1
-    assert rivit[0]["jatkoon"] == 0
+    assert rivit[0]["advanced"] == 0
 
 
 def test_pisteet_tallentuvat_tietokantaan(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
     analyytikko = [_analyytikkorivi("AAPL")]  # upgrade(3) + Buy(2) = 5 pistetta
 
@@ -856,14 +856,14 @@ def test_pisteet_tallentuvat_tietokantaan(tmp_path, monkeypatch):
 
     trendinmetsastaja.aja("ajoP", "normaali", polku=polku)
 
-    rivit = tietokanta.hae_ehdokkaat("ajoP", vain_jatkoon=False, polku=polku)
+    rivit = tietokanta.get_candidates("ajoP", advanced_only=False, db_path=polku)
     assert len(rivit) == 1
-    assert rivit[0]["pisteet"] == 5
+    assert rivit[0]["score"] == 5
 
 
 def test_aja_normaali_keskeytyy_jos_us_symbolit_haku_epaonnistuu(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
     monkeypatch.setattr(
         trendinmetsastaja,
@@ -882,20 +882,20 @@ def test_aja_normaali_keskeytyy_jos_us_symbolit_haku_epaonnistuu(tmp_path, monke
     with pytest.raises(RuntimeError):
         trendinmetsastaja.aja("ajo4", "normaali", polku=polku)
 
-    rivit = tietokanta.hae_ehdokkaat("ajo4", vain_jatkoon=False, polku=polku)
+    rivit = tietokanta.get_candidates("ajo4", advanced_only=False, db_path=polku)
     assert rivit == []
 
 
 def test_aja_tarkistus_ei_kutsu_hakufunktioita(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
-    yhteys = tietokanta.avaa_yhteys(polku)
+    yhteys = tietokanta.open_connection(polku)
     try:
         yhteys.execute(
             """
             INSERT INTO positions (
-                symboli, tila, ostohinta, maara, panos_usd, ostopvm, osto_ajo_id
+                symbol, status, buy_price, quantity, stake_usd, buy_date, buy_run_id
             ) VALUES ('AAPL', 'aktiivinen', 100, 10, 1000, '2026-01-01', 'ajo0')
             """
         )
@@ -914,10 +914,10 @@ def test_aja_tarkistus_ei_kutsu_hakufunktioita(tmp_path, monkeypatch):
 
     trendinmetsastaja.aja("ajo3", "tarkistus", polku=polku)
 
-    rivit = tietokanta.hae_ehdokkaat("ajo3", vain_jatkoon=False, polku=polku)
+    rivit = tietokanta.get_candidates("ajo3", advanced_only=False, db_path=polku)
     assert len(rivit) == 1
-    assert rivit[0]["symboli"] == "AAPL"
-    assert rivit[0]["jatkoon"] == 1
+    assert rivit[0]["symbol"] == "AAPL"
+    assert rivit[0]["advanced"] == 1
 
 
 # --- hae_us_symbolit(): 30 vrk:n valimuisti ja epaonnistumisen varajarjestelma ---
@@ -935,9 +935,7 @@ def test_symbolilista_tuore_valimuisti_kaytetaan_ilman_verkkokutsua(
 ):
     valimuisti_dir = tmp_path / "valimuisti"
     monkeypatch.setattr(trendinmetsastaja, "VALIMUISTI_DIR", valimuisti_dir)
-    monkeypatch.setattr(
-        trendinmetsastaja, "hae_twelve_data_avain", lambda: "testiavain"
-    )
+    monkeypatch.setattr(trendinmetsastaja, "get_twelve_data_key", lambda: "testiavain")
     _kirjoita_symbolilista_valimuistiin(
         valimuisti_dir, {"AAPL", "MSFT"}, paivia_sitten=5
     )
@@ -959,9 +957,7 @@ def test_symbolilista_haku_epaonnistuu_eika_valimuistia_ole_keskeytyy(
 ):
     valimuisti_dir = tmp_path / "valimuisti"
     monkeypatch.setattr(trendinmetsastaja, "VALIMUISTI_DIR", valimuisti_dir)
-    monkeypatch.setattr(
-        trendinmetsastaja, "hae_twelve_data_avain", lambda: "testiavain"
-    )
+    monkeypatch.setattr(trendinmetsastaja, "get_twelve_data_key", lambda: "testiavain")
 
     def _kaadu(*args, **kwargs):
         raise requests.exceptions.Timeout("simuloitu aikakatkaisu")
@@ -975,9 +971,7 @@ def test_symbolilista_haku_epaonnistuu_eika_valimuistia_ole_keskeytyy(
 def test_symbolilista_40_vrk_vanhaa_ei_kayteta_varajarjestelmana(tmp_path, monkeypatch):
     valimuisti_dir = tmp_path / "valimuisti"
     monkeypatch.setattr(trendinmetsastaja, "VALIMUISTI_DIR", valimuisti_dir)
-    monkeypatch.setattr(
-        trendinmetsastaja, "hae_twelve_data_avain", lambda: "testiavain"
-    )
+    monkeypatch.setattr(trendinmetsastaja, "get_twelve_data_key", lambda: "testiavain")
     _kirjoita_symbolilista_valimuistiin(valimuisti_dir, {"AAPL"}, paivia_sitten=40)
 
     def _kaadu(*args, **kwargs):

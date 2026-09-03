@@ -4,19 +4,19 @@ import pytest
 
 from agents import paatoksentekija
 from core import tietokanta
-from core.asetukset import MAX_POSITIOT, POSITION_KOKO, RR_KYNNYS
+from core.asetukset import MAX_POSITIONS, POSITION_SIZE, RR_THRESHOLD
 
 
 def _pisteytys(symboli="AAPL", risk_reward_pisteet=8.0, hinta=100.0):
     return {
-        "symboli": symboli,
-        "risk_reward_pisteet": risk_reward_pisteet,
-        "hinta": hinta,
+        "symbol": symboli,
+        "risk_reward_score": risk_reward_pisteet,
+        "price": hinta,
     }
 
 
 def _ehdokas(viiteostohinta=100.0, pisteet=5.0):
-    return {"viiteostohinta": viiteostohinta, "pisteet": pisteet}
+    return {"reference_price": viiteostohinta, "score": pisteet}
 
 
 def _tila(aktiivisia=0, kateinen=10000.0, aktiiviset_symbolit=None):
@@ -50,13 +50,13 @@ def test_duplikaatti_hylkaa():
 
 
 def test_rr_alle_kynnyksen_hylkaa():
-    pisteytys = _pisteytys(risk_reward_pisteet=RR_KYNNYS - 1)
+    pisteytys = _pisteytys(risk_reward_pisteet=RR_THRESHOLD - 1)
 
     paatos, perustelu = paatoksentekija.paata_osto(pisteytys, _ehdokas(), _tila())
 
     assert paatos == "hylatty"
     assert "risk_reward_pisteet" in perustelu
-    assert "RR_KYNNYS" in perustelu
+    assert "RR_THRESHOLD" in perustelu
 
 
 def test_hinta_yli_viiteostohinnan_hylkaa():
@@ -111,32 +111,32 @@ def test_puuttuva_viiteostohinta_ohittaa_ehdon():
 
 
 def test_kapasiteetti_tayonna_hylkaa():
-    tila = _tila(aktiivisia=MAX_POSITIOT)
+    tila = _tila(aktiivisia=MAX_POSITIONS)
 
     paatos, perustelu = paatoksentekija.paata_osto(_pisteytys(), _ehdokas(), tila)
 
     assert paatos == "hylatty"
-    assert "MAX_POSITIOT" in perustelu
+    assert "MAX_POSITIONS" in perustelu
 
 
 def test_liian_vahan_kateista_hylkaa():
-    tila = _tila(kateinen=POSITION_KOKO - 1)
+    tila = _tila(kateinen=POSITION_SIZE - 1)
 
     paatos, perustelu = paatoksentekija.paata_osto(_pisteytys(), _ehdokas(), tila)
 
     assert paatos == "hylatty"
-    assert "POSITION_KOKO" in perustelu
+    assert "POSITION_SIZE" in perustelu
 
 
 def test_rr_tarkistetaan_ennen_kapasiteettia():
-    pisteytys = _pisteytys(risk_reward_pisteet=RR_KYNNYS - 1)
-    tila = _tila(aktiivisia=MAX_POSITIOT)
+    pisteytys = _pisteytys(risk_reward_pisteet=RR_THRESHOLD - 1)
+    tila = _tila(aktiivisia=MAX_POSITIONS)
 
     paatos, perustelu = paatoksentekija.paata_osto(pisteytys, _ehdokas(), tila)
 
     assert paatos == "hylatty"
-    assert "RR_KYNNYS" in perustelu
-    assert "MAX_POSITIOT" not in perustelu
+    assert "RR_THRESHOLD" in perustelu
+    assert "MAX_POSITIONS" not in perustelu
 
 
 # --- aja(): tietokannan kanssa, lahtodata kirjoitettu suoraan kantaan ---
@@ -144,86 +144,86 @@ def test_rr_tarkistetaan_ennen_kapasiteettia():
 
 def test_aja_kapasiteetti_rajoittaa_ostot(tmp_path):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
-    for i in range(MAX_POSITIOT - 1):
-        tietokanta.avaa_positio(
-            symboli=f"OLD{i}",
-            ostohinta=10.0,
-            panos_usd=POSITION_KOKO,
-            osto_ajo_id="aiempi",
-            polku=polku,
+    for i in range(MAX_POSITIONS - 1):
+        tietokanta.open_position(
+            symbol=f"OLD{i}",
+            buy_price=10.0,
+            stake_usd=POSITION_SIZE,
+            buy_run_id="aiempi",
+            db_path=polku,
         )
 
     for symboli in ("AAA", "BBB", "CCC"):
-        tietokanta.lisaa_pisteytys(
-            ajo_id="ajo1",
-            ajotyyppi="normaali",
-            symboli=symboli,
-            risk_reward_pisteet=8.0,
-            hinta=50.0,
-            polku=polku,
+        tietokanta.insert_score(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol=symboli,
+            risk_reward_score=8.0,
+            price=50.0,
+            db_path=polku,
         )
 
     paatoksentekija.aja("ajo1", "normaali", polku=polku)
 
-    paatokset = tietokanta.hae_paatokset("ajo1", polku=polku)
-    ostot = [p for p in paatokset if p["paatos"] == "osta"]
-    hylatyt = [p for p in paatokset if p["paatos"] == "hylatty"]
+    paatokset = tietokanta.get_decisions("ajo1", db_path=polku)
+    ostot = [p for p in paatokset if p["decision"] == "osta"]
+    hylatyt = [p for p in paatokset if p["decision"] == "hylatty"]
 
     assert len(ostot) == 1
     assert len(hylatyt) == 2
-    assert all("MAX_POSITIOT" in p["perustelu"] for p in hylatyt)
+    assert all("MAX_POSITIONS" in p["rationale"] for p in hylatyt)
 
 
 def test_aja_kateinen_rajoittaa_ostot(tmp_path):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
     # yksi olemassa oleva positio jattaa kateiseksi 1500 mutta pitaa salkun
-    # kokonaisarvon (1500 + 8500 = 10000) SALKUN_STOP_TASOn ylapuolella,
+    # kokonaisarvon (1500 + 8500 = 10000) PORTFOLIO_STOP_LEVELn ylapuolella,
     # jotta testi mittaa nimenomaan kateisrajaa eika pysaytinta.
-    tietokanta.avaa_positio(
-        symboli="OLD",
-        ostohinta=100.0,
-        panos_usd=8500.0,
-        osto_ajo_id="aiempi",
-        polku=polku,
+    tietokanta.open_position(
+        symbol="OLD",
+        buy_price=100.0,
+        stake_usd=8500.0,
+        buy_run_id="aiempi",
+        db_path=polku,
     )
-    assert tietokanta.hae_kateinen(polku=polku) == 1500.0
+    assert tietokanta.get_cash(db_path=polku) == 1500.0
 
     for symboli in ("AAA", "BBB"):
-        tietokanta.lisaa_pisteytys(
-            ajo_id="ajo1",
-            ajotyyppi="normaali",
-            symboli=symboli,
-            risk_reward_pisteet=8.0,
-            hinta=50.0,
-            polku=polku,
+        tietokanta.insert_score(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol=symboli,
+            risk_reward_score=8.0,
+            price=50.0,
+            db_path=polku,
         )
 
     paatoksentekija.aja("ajo1", "normaali", polku=polku)
 
-    paatokset = tietokanta.hae_paatokset("ajo1", polku=polku)
-    ostot = [p for p in paatokset if p["paatos"] == "osta"]
+    paatokset = tietokanta.get_decisions("ajo1", db_path=polku)
+    ostot = [p for p in paatokset if p["decision"] == "osta"]
 
     assert len(ostot) == 1
-    assert tietokanta.hae_kateinen(polku=polku) == 500.0
+    assert tietokanta.get_cash(db_path=polku) == 500.0
 
 
 def test_aja_jarjestyssaanto_rr_sitten_ehdokkaan_pisteet_sitten_aakkoset(tmp_path):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
     # 8 aktiivista positiota -> 2 paikkaa vapaana, jotta jarjestys ratkaisee
     # ketka kaksi neljasta ehdokkaasta ostetaan.
     for i in range(8):
-        tietokanta.avaa_positio(
-            symboli=f"OLD{i}",
-            ostohinta=10.0,
-            panos_usd=POSITION_KOKO,
-            osto_ajo_id="aiempi",
-            polku=polku,
+        tietokanta.open_position(
+            symbol=f"OLD{i}",
+            buy_price=10.0,
+            stake_usd=POSITION_SIZE,
+            buy_run_id="aiempi",
+            db_path=polku,
         )
 
     for symboli, pisteet in (
@@ -232,29 +232,30 @@ def test_aja_jarjestyssaanto_rr_sitten_ehdokkaan_pisteet_sitten_aakkoset(tmp_pat
         ("GAMMA", 3.0),
         ("ZETA", 5.0),
     ):
-        tietokanta.lisaa_ehdokas(
-            ajo_id="ajo1",
-            ajotyyppi="normaali",
-            symboli=symboli,
-            lahde="analyytikko",
-            pisteet=pisteet,
-            polku=polku,
+        tietokanta.insert_candidate(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol=symboli,
+            source="analyytikko",
+            score=pisteet,
+            db_path=polku,
         )
 
     for symboli, rr in (("ZETA", 9.0), ("BETA", 8.0), ("ALFA", 8.0), ("GAMMA", 8.0)):
-        tietokanta.lisaa_pisteytys(
-            ajo_id="ajo1",
-            ajotyyppi="normaali",
-            symboli=symboli,
-            risk_reward_pisteet=rr,
-            hinta=50.0,
-            polku=polku,
+        tietokanta.insert_score(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol=symboli,
+            risk_reward_score=rr,
+            price=50.0,
+            db_path=polku,
         )
 
     paatoksentekija.aja("ajo1", "normaali", polku=polku)
 
     paatokset = {
-        p["symboli"]: p["paatos"] for p in tietokanta.hae_paatokset("ajo1", polku=polku)
+        p["symbol"]: p["decision"]
+        for p in tietokanta.get_decisions("ajo1", db_path=polku)
     }
 
     # ZETA: korkein RR (9) -> ensin.
@@ -269,101 +270,101 @@ def test_aja_jarjestyssaanto_rr_sitten_ehdokkaan_pisteet_sitten_aakkoset(tmp_pat
 
 def test_aja_salkun_stop_taso_estaa_kaikki_ostot(tmp_path):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
-    nykyinen = tietokanta.hae_kateinen(polku=polku)
-    tietokanta.muuta_kateista(1000 - nykyinen, polku=polku)
+    nykyinen = tietokanta.get_cash(db_path=polku)
+    tietokanta.adjust_cash(1000 - nykyinen, db_path=polku)
 
     for symboli in ("AAA", "BBB"):
-        tietokanta.lisaa_pisteytys(
-            ajo_id="ajo1",
-            ajotyyppi="normaali",
-            symboli=symboli,
-            risk_reward_pisteet=9.0,
-            hinta=50.0,
-            polku=polku,
+        tietokanta.insert_score(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol=symboli,
+            risk_reward_score=9.0,
+            price=50.0,
+            db_path=polku,
         )
 
     paatoksentekija.aja("ajo1", "normaali", polku=polku)
 
-    paatokset = tietokanta.hae_paatokset("ajo1", polku=polku)
+    paatokset = tietokanta.get_decisions("ajo1", db_path=polku)
 
     assert len(paatokset) == 2
-    assert all(p["paatos"] == "hylatty" for p in paatokset)
-    assert all("pysaytin" in p["perustelu"] for p in paatokset)
+    assert all(p["decision"] == "hylatty" for p in paatokset)
+    assert all("pysaytin" in p["rationale"] for p in paatokset)
 
 
 def test_aja_nolla_pisteytysta_palauttaa_siististi(tmp_path):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
     tulos = paatoksentekija.aja("ajo_tyhja", "normaali", polku=polku)
 
     assert "0 pisteytysta" in tulos
-    assert tietokanta.hae_paatokset("ajo_tyhja", polku=polku) == []
+    assert tietokanta.get_decisions("ajo_tyhja", db_path=polku) == []
 
 
 def test_aja_tarkistus_ei_tee_paatoksia(tmp_path):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
-    tietokanta.lisaa_pisteytys(
-        ajo_id="ajo1",
-        ajotyyppi="tarkistus",
-        symboli="AAPL",
-        risk_reward_pisteet=9.0,
-        hinta=100.0,
-        polku=polku,
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="tarkistus",
+        symbol="AAPL",
+        risk_reward_score=9.0,
+        price=100.0,
+        db_path=polku,
     )
 
     tulos = paatoksentekija.aja("ajo1", "tarkistus", polku=polku)
 
-    assert tietokanta.hae_paatokset("ajo1", polku=polku) == []
+    assert tietokanta.get_decisions("ajo1", db_path=polku) == []
     assert "vaihe 3b" in tulos
 
 
 def test_aja_jokaisesta_pisteytyksesta_syntyy_tasan_yksi_paatos(tmp_path):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
     symbolit = ["AAA", "BBB", "CCC", "DDD"]
     for symboli in symbolit:
-        tietokanta.lisaa_pisteytys(
-            ajo_id="ajo1",
-            ajotyyppi="normaali",
-            symboli=symboli,
-            risk_reward_pisteet=5.0,
-            hinta=50.0,
-            polku=polku,
-        )  # alle RR_KYNNYS -> hylatty, mutta paatos kirjataan silti
+        tietokanta.insert_score(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol=symboli,
+            risk_reward_score=5.0,
+            price=50.0,
+            db_path=polku,
+        )  # alle RR_THRESHOLD -> hylatty, mutta paatos kirjataan silti
 
     paatoksentekija.aja("ajo1", "normaali", polku=polku)
 
-    paatokset = tietokanta.hae_paatokset("ajo1", polku=polku)
+    paatokset = tietokanta.get_decisions("ajo1", db_path=polku)
     assert len(paatokset) == len(symbolit)
-    assert {p["symboli"] for p in paatokset} == set(symbolit)
+    assert {p["symbol"] for p in paatokset} == set(symbolit)
 
 
-# --- tietokanta.avaa_positio() ---
+# --- tietokanta.open_position() ---
 
 
 def test_avaa_positio_onnistuu_ja_vahentaa_kateisen(tmp_path):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
-    alku_kateinen = tietokanta.hae_kateinen(polku=polku)
+    tietokanta.init_database(polku)
+    alku_kateinen = tietokanta.get_cash(db_path=polku)
 
-    positio_id = tietokanta.avaa_positio(
-        symboli="AAPL",
-        ostohinta=50.0,
-        panos_usd=1000.0,
-        osto_ajo_id="ajo1",
-        polku=polku,
+    positio_id = tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=50.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo1",
+        db_path=polku,
     )
 
     assert positio_id > 0
-    assert tietokanta.hae_kateinen(polku=polku) == alku_kateinen - 1000.0
+    assert tietokanta.get_cash(db_path=polku) == alku_kateinen - 1000.0
 
-    yhteys = tietokanta.avaa_yhteys(polku)
+    yhteys = tietokanta.open_connection(polku)
     try:
         rivi = yhteys.execute(
             "SELECT * FROM positions WHERE id = ?", (positio_id,)
@@ -371,24 +372,24 @@ def test_avaa_positio_onnistuu_ja_vahentaa_kateisen(tmp_path):
     finally:
         yhteys.close()
 
-    assert rivi["maara"] == 1000.0 / 50.0
-    assert rivi["tila"] == "aktiivinen"
+    assert rivi["quantity"] == 1000.0 / 50.0
+    assert rivi["status"] == "aktiivinen"
 
 
 def test_avaa_positio_liian_vahan_kateista(tmp_path):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
     with pytest.raises(ValueError):
-        tietokanta.avaa_positio(
-            symboli="AAPL",
-            ostohinta=50.0,
-            panos_usd=1_000_000.0,
-            osto_ajo_id="ajo1",
-            polku=polku,
+        tietokanta.open_position(
+            symbol="AAPL",
+            buy_price=50.0,
+            stake_usd=1_000_000.0,
+            buy_run_id="ajo1",
+            db_path=polku,
         )
 
-    yhteys = tietokanta.avaa_yhteys(polku)
+    yhteys = tietokanta.open_connection(polku)
     try:
         maara = yhteys.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
     finally:
@@ -399,24 +400,24 @@ def test_avaa_positio_liian_vahan_kateista(tmp_path):
 
 def test_avaa_positio_kaksoisosto_nostaa_integrityerrorin(tmp_path):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
+    tietokanta.init_database(polku)
 
-    tietokanta.avaa_positio(
-        symboli="AAPL",
-        ostohinta=50.0,
-        panos_usd=1000.0,
-        osto_ajo_id="ajo1",
-        polku=polku,
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=50.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo1",
+        db_path=polku,
     )
-    kateinen_ekan_jalkeen = tietokanta.hae_kateinen(polku=polku)
+    kateinen_ekan_jalkeen = tietokanta.get_cash(db_path=polku)
 
     with pytest.raises(sqlite3.IntegrityError):
-        tietokanta.avaa_positio(
-            symboli="AAPL",
-            ostohinta=60.0,
-            panos_usd=1000.0,
-            osto_ajo_id="ajo2",
-            polku=polku,
+        tietokanta.open_position(
+            symbol="AAPL",
+            buy_price=60.0,
+            stake_usd=1000.0,
+            buy_run_id="ajo2",
+            db_path=polku,
         )
 
-    assert tietokanta.hae_kateinen(polku=polku) == kateinen_ekan_jalkeen
+    assert tietokanta.get_cash(db_path=polku) == kateinen_ekan_jalkeen

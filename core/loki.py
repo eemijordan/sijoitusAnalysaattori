@@ -3,36 +3,36 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-LOKITIEDOSTO = DATA_DIR / "loki.txt"
+LOG_FILE = DATA_DIR / "loki.txt"
 
-_JUURINIMI = "sijoitusanalysaattori"
-_alustettu = False
+_ROOT_NAME = "sijoitusanalysaattori"
+_initialized = False
 
 
-def _alusta_lokitus() -> None:
-    global _alustettu
-    if _alustettu:
+def _init_logging() -> None:
+    global _initialized
+    if _initialized:
         return
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    muoto = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    tiedosto_handler = logging.FileHandler(LOKITIEDOSTO, encoding="utf-8")
-    tiedosto_handler.setFormatter(muoto)
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler.setFormatter(fmt)
 
-    ruutu_handler = logging.StreamHandler()
-    ruutu_handler.setFormatter(muoto)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(fmt)
 
-    juuri = logging.getLogger(_JUURINIMI)
-    juuri.setLevel(logging.INFO)
-    juuri.addHandler(tiedosto_handler)
-    juuri.addHandler(ruutu_handler)
-    juuri.propagate = False
+    root = logging.getLogger(_ROOT_NAME)
+    root.setLevel(logging.INFO)
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
+    root.propagate = False
 
-    _alustettu = True
+    _initialized = True
 
 
-def hae_loki(nimi: str) -> logging.Logger:
-    _alusta_lokitus()
-    return logging.getLogger(f"{_JUURINIMI}.{nimi}")
+def get_logger(name: str) -> logging.Logger:
+    _init_logging()
+    return logging.getLogger(f"{_ROOT_NAME}.{name}")

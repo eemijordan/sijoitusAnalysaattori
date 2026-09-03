@@ -57,16 +57,16 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
     monkeypatch.setattr(tekninen_analyytikko, "hae_atr", lambda symboli: 2.0)
     monkeypatch.setattr(tekninen_analyytikko, "hae_rsi", lambda symboli: 55.0)
 
-    ajo_id = orkestroija.aja_normaali(polku)
+    ajo_id = orkestroija.run_normal(polku)
 
-    ehdokkaat = tietokanta.hae_ehdokkaat(ajo_id, vain_jatkoon=False, polku=polku)
-    pisteytykset = tietokanta.hae_pisteytykset(ajo_id, polku=polku)
-    paatokset = tietokanta.hae_paatokset(ajo_id, polku=polku)
+    ehdokkaat = tietokanta.get_candidates(ajo_id, advanced_only=False, db_path=polku)
+    pisteytykset = tietokanta.get_scores(ajo_id, db_path=polku)
+    paatokset = tietokanta.get_decisions(ajo_id, db_path=polku)
 
     assert len(ehdokkaat) > 0
     assert len(pisteytykset) > 0
     assert len(paatokset) > 0
 
     for rivi in ehdokkaat + pisteytykset + paatokset:
-        assert rivi["ajo_id"] == ajo_id
-        assert rivi["ajotyyppi"] == "normaali"
+        assert rivi["run_id"] == ajo_id
+        assert rivi["run_type"] == "normaali"

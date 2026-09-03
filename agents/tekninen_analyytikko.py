@@ -6,9 +6,9 @@ from zoneinfo import ZoneInfo
 import requests
 
 from core import loki, tietokanta
-from core.asetukset import MIN_OSAKEKURSSI, MIN_PAIVAVAIHTO, hae_twelve_data_avain
+from core.asetukset import MIN_DAILY_TURNOVER, MIN_SHARE_PRICE, get_twelve_data_key
 
-_loki = loki.hae_loki(__name__)
+_loki = loki.get_logger(__name__)
 
 
 class KeskenerainenKurssidataVirhe(RuntimeError):
@@ -122,7 +122,7 @@ def _laske_kurssitunnusluvut(paivat: list[dict]) -> dict:
 
 
 def hae_kurssidata(symboli: str) -> dict | None:
-    apikey = hae_twelve_data_avain()
+    apikey = get_twelve_data_key()
     data = _hae_twelvedata_json(
         f"{TWELVE_DATA_BASE}/time_series",
         {
@@ -178,7 +178,7 @@ def _pura_indikaattoriarvo(data: dict, avain: str) -> float | None:
 
 
 def hae_atr(symboli: str) -> float | None:
-    apikey = hae_twelve_data_avain()
+    apikey = get_twelve_data_key()
     data = _hae_twelvedata_json(
         f"{TWELVE_DATA_BASE}/atr",
         {"symbol": symboli, "interval": "1day", "outputsize": 1, "apikey": apikey},
@@ -187,7 +187,7 @@ def hae_atr(symboli: str) -> float | None:
 
 
 def hae_rsi(symboli: str) -> float | None:
-    apikey = hae_twelve_data_avain()
+    apikey = get_twelve_data_key()
     data = _hae_twelvedata_json(
         f"{TWELVE_DATA_BASE}/rsi",
         {"symbol": symboli, "interval": "1day", "outputsize": 1, "apikey": apikey},
@@ -355,16 +355,16 @@ def laske_pisteet(
     return pisteet, indikaattorit, perustelu
 
 
-def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.OLETUS_TIETOKANTA) -> str:
+def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.DEFAULT_DB_PATH) -> str:
     # Normaali- ja tarkistusajo lukevat molemmat jatkoon=1-rivit samalla
     # tavalla - Agentti 1 on jo kirjoittanut aktiiviset positiot naiksi
     # tarkistusajossa, joten sama haara riittaa.
-    ehdokkaat = tietokanta.hae_ehdokkaat(ajo_id, vain_jatkoon=True, polku=polku)
+    ehdokkaat = tietokanta.get_candidates(ajo_id, advanced_only=True, db_path=polku)
 
     kirjattu = 0
     ensimmainen_lokitettu = False
     for ehdokas in ehdokkaat:
-        symboli = ehdokas["symboli"]
+        symboli = ehdokas["symbol"]
         try:
             kurssidata = hae_kurssidata(symboli)
             if kurssidata is None:
@@ -379,18 +379,19 @@ def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.OLETUS_TIETOKANTA) -> str:
                 ensimmainen_lokitettu = True
 
             nykyhinta = kurssidata["nykyhinta"]
-            if nykyhinta < MIN_OSAKEKURSSI:
+            if nykyhinta < MIN_SHARE_PRICE:
                 _loki.info(
-                    f"{symboli}: MIN_OSAKEKURSSI-raja hylkasi (hinta {nykyhinta} USD "
-                    f"< {MIN_OSAKEKURSSI} USD), ohitetaan"
+                    f"{symboli}: MIN_SHARE_PRICE-raja hylkasi (hinta {nykyhinta} USD "
+                    f"< {MIN_SHARE_PRICE} USD), ohitetaan"
                 )
                 continue
 
             paivavaihto = kurssidata.get("keskimaarainen_paivavaihto_usd")
-            if paivavaihto is not None and paivavaihto < MIN_PAIVAVAIHTO:
+            if paivavaihto is not None and paivavaihto < MIN_DAILY_TURNOVER:
                 _loki.info(
-                    f"{symboli}: MIN_PAIVAVAIHTO-raja hylkasi (paivavaihto "
-                    f"{paivavaihto:,.0f} USD < {MIN_PAIVAVAIHTO:,.0f} USD), ohitetaan"
+                    f"{symboli}: MIN_DAILY_TURNOVER-raja hylkasi (paivavaihto "
+                    f"{paivavaihto:,.0f} USD < {MIN_DAILY_TURNOVER:,.0f} USD), "
+                    f"ohitetaan"
                 )
                 continue
 
@@ -399,15 +400,15 @@ def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.OLETUS_TIETOKANTA) -> str:
 
             pisteet, indikaattorit, perustelu = laske_pisteet(kurssidata, atr, rsi)
 
-            tietokanta.lisaa_pisteytys(
-                ajo_id=ajo_id,
-                ajotyyppi=ajotyyppi,
-                symboli=symboli,
-                risk_reward_pisteet=pisteet,
-                hinta=nykyhinta,
-                indikaattorit_json=json.dumps(indikaattorit),
-                perustelu=perustelu,
-                polku=polku,
+            tietokanta.insert_score(
+                run_id=ajo_id,
+                run_type=ajotyyppi,
+                symbol=symboli,
+                risk_reward_score=pisteet,
+                price=nykyhinta,
+                indicators_json=json.dumps(indikaattorit),
+                rationale=perustelu,
+                db_path=polku,
             )
             kirjattu += 1
         except KeskenerainenKurssidataVirhe:

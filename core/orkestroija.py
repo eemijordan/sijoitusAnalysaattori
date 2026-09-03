@@ -3,7 +3,7 @@ import sys
 from agents import paatoksentekija, raportoija, tekninen_analyytikko, trendinmetsastaja
 from core import loki, tietokanta
 
-_loki = loki.hae_loki(__name__)
+_loki = loki.get_logger(__name__)
 
 _AGENTIT = [
     ("Agentti 1 - Trendinmetsastaja", trendinmetsastaja),
@@ -13,30 +13,33 @@ _AGENTIT = [
 ]
 
 
-def aja_normaali(polku=tietokanta.OLETUS_TIETOKANTA) -> str:
-    ajo_id = tietokanta.luo_ajo_id()
-    ajotyyppi = "normaali"
+def run_normal(db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    run_id = tietokanta.new_run_id()
+    run_type = "normaali"
 
-    tietokanta.alusta_tietokanta(polku)
-    _loki.info(f"Ajo {ajo_id} ({ajotyyppi}) alkaa")
+    tietokanta.init_database(db_path)
+    _loki.info(f"Ajo {run_id} ({run_type}) alkaa")
 
-    for nimi, moduuli in _AGENTIT:
+    for name, module in _AGENTIT:
         try:
-            yhteenveto = moduuli.aja(ajo_id, ajotyyppi, polku=polku)
-            _loki.info(f"{nimi}: {yhteenveto}")
-        except Exception as virhe:
-            _loki.error(f"{nimi} epaonnistui ajossa {ajo_id}: {virhe}")
+            # HUOM: agentit ottavat toistaiseksi vastaan aja(ajo_id, ajotyyppi,
+            # polku=...) - nimet vaihtuvat run(run_id, run_type, db_path=...)
+            # -muotoon askeleessa 3, jolloin tama kutsu paivitetaan samalla.
+            summary = module.aja(run_id, run_type, polku=db_path)
+            _loki.info(f"{name}: {summary}")
+        except Exception as error:
+            _loki.error(f"{name} epaonnistui ajossa {run_id}: {error}")
             raise RuntimeError(
-                f"Ajo {ajo_id} keskeytyi: {nimi} epaonnistui - {virhe}"
-            ) from virhe
+                f"Ajo {run_id} keskeytyi: {name} epaonnistui - {error}"
+            ) from error
 
-    _loki.info(f"Ajo {ajo_id} ({ajotyyppi}) valmis")
-    return ajo_id
+    _loki.info(f"Ajo {run_id} ({run_type}) valmis")
+    return run_id
 
 
 if __name__ == "__main__":
     try:
-        aja_normaali()
-    except RuntimeError as virhe:
-        print(f"VIRHE: {virhe}")
+        run_normal()
+    except RuntimeError as error:
+        print(f"VIRHE: {error}")
         sys.exit(1)

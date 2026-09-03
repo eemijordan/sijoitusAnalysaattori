@@ -3,7 +3,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 
-from core.asetukset import hae_fmp_avain, hae_twelve_data_avain
+from core.asetukset import get_fmp_key, get_twelve_data_key
 
 TIMEOUT = 10
 MAX_MERKKIA = 400
@@ -307,8 +307,8 @@ def _tulosta_pe_analyysi(tulokset: dict, symbolit: list) -> None:
 
 
 def main() -> None:
-    fmp_avain = hae_fmp_avain()
-    twelve_data_avain = hae_twelve_data_avain()
+    fmp_avain = get_fmp_key()
+    twelve_data_avain = get_twelve_data_key()
 
     tulokset: dict = {}
 

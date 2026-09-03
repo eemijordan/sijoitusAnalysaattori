@@ -2,388 +2,384 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from core.asetukset import ALKUPAAOMA
+from core.asetukset import INITIAL_CAPITAL
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-OLETUS_TIETOKANTA = DATA_DIR / "sijoitusanalysaattori.db"
+DEFAULT_DB_PATH = DATA_DIR / "sijoitusanalysaattori.db"
 
-SKEEMA = """
+SCHEMA = """
 CREATE TABLE IF NOT EXISTS portfolio (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    alkupaaoma REAL NOT NULL,
-    kateinen REAL NOT NULL,
-    valuutta TEXT NOT NULL DEFAULT 'USD',
-    paivitetty TEXT NOT NULL
+    initial_capital REAL NOT NULL,
+    cash REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS trend_candidates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ajo_id TEXT NOT NULL,
-    ajotyyppi TEXT NOT NULL,
-    symboli TEXT NOT NULL,
-    lahde TEXT NOT NULL,
-    syy TEXT,
-    pisteet REAL,
-    onko_syy_jarkeva INTEGER,
-    syy_perustelu TEXT,
-    viiteostohinta REAL,
-    sijoitus INTEGER,
-    jatkoon INTEGER NOT NULL DEFAULT 0,
-    pvm TEXT NOT NULL
+    run_id TEXT NOT NULL,
+    run_type TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    source TEXT NOT NULL,
+    reason TEXT,
+    score REAL,
+    reason_is_valid INTEGER,
+    reason_note TEXT,
+    reference_price REAL,
+    rank INTEGER,
+    advanced INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS technical_scores (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ajo_id TEXT NOT NULL,
-    ajotyyppi TEXT NOT NULL,
-    symboli TEXT NOT NULL,
-    risk_reward_pisteet REAL NOT NULL,
-    hinta REAL,
-    indikaattorit_json TEXT,
-    perustelu TEXT,
-    pvm TEXT NOT NULL
+    run_id TEXT NOT NULL,
+    run_type TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    risk_reward_score REAL NOT NULL,
+    price REAL,
+    indicators_json TEXT,
+    rationale TEXT,
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ajo_id TEXT NOT NULL,
-    ajotyyppi TEXT NOT NULL,
-    symboli TEXT NOT NULL,
-    paatos TEXT NOT NULL CHECK (paatos IN ('osta', 'pida', 'myy', 'hylatty')),
-    perustelu TEXT,
-    pvm TEXT NOT NULL
+    run_id TEXT NOT NULL,
+    run_type TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('osta', 'pida', 'myy', 'hylatty')),
+    rationale TEXT,
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS positions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    symboli TEXT NOT NULL,
-    tila TEXT NOT NULL CHECK (tila IN ('aktiivinen', 'suljettu')),
-    ostohinta REAL NOT NULL,
-    maara REAL NOT NULL,
-    panos_usd REAL NOT NULL,
+    symbol TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('aktiivinen', 'suljettu')),
+    buy_price REAL NOT NULL,
+    quantity REAL NOT NULL,
+    stake_usd REAL NOT NULL,
     stop_loss REAL,
-    tavoitehinta REAL,
-    ostopvm TEXT NOT NULL,
-    osto_ajo_id TEXT NOT NULL,
-    myyntihinta REAL,
-    myyntipvm TEXT,
-    voitto_tappio_usd REAL,
-    voitto_tappio_pct REAL,
-    viimeisin_tarkistus TEXT
+    target_price REAL,
+    buy_date TEXT NOT NULL,
+    buy_run_id TEXT NOT NULL,
+    sell_price REAL,
+    sell_date TEXT,
+    pnl_usd REAL,
+    pnl_pct REAL,
+    last_checked TEXT
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_aktiivinen_symboli
-ON positions(symboli) WHERE tila = 'aktiivinen';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_open_symbol
+ON positions(symbol) WHERE status = 'aktiivinen';
 """
 
 
-def avaa_yhteys(polku=OLETUS_TIETOKANTA):
-    Path(polku).parent.mkdir(parents=True, exist_ok=True)
-    yhteys = sqlite3.connect(polku)
-    yhteys.row_factory = sqlite3.Row
-    return yhteys
+def open_connection(db_path=DEFAULT_DB_PATH):
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    return connection
 
 
-def alusta_tietokanta(polku=OLETUS_TIETOKANTA):
-    yhteys = avaa_yhteys(polku)
+def init_database(db_path=DEFAULT_DB_PATH):
+    connection = open_connection(db_path)
     try:
-        yhteys.executescript(SKEEMA)
+        connection.executescript(SCHEMA)
 
-        rivimaara = yhteys.execute("SELECT COUNT(*) FROM portfolio").fetchone()[0]
-        if rivimaara == 0:
-            yhteys.execute(
+        row_count = connection.execute("SELECT COUNT(*) FROM portfolio").fetchone()[0]
+        if row_count == 0:
+            connection.execute(
                 "INSERT INTO portfolio "
-                "(id, alkupaaoma, kateinen, valuutta, paivitetty) "
+                "(id, initial_capital, cash, currency, updated_at) "
                 "VALUES (1, ?, ?, ?, ?)",
                 (
-                    ALKUPAAOMA,
-                    ALKUPAAOMA,
+                    INITIAL_CAPITAL,
+                    INITIAL_CAPITAL,
                     "USD",
                     datetime.now().isoformat(timespec="seconds"),
                 ),
             )
-        yhteys.commit()
+        connection.commit()
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def luo_ajo_id() -> str:
+def new_run_id() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
-def hae_kateinen(polku=OLETUS_TIETOKANTA) -> float:
-    yhteys = avaa_yhteys(polku)
+def get_cash(db_path=DEFAULT_DB_PATH) -> float:
+    connection = open_connection(db_path)
     try:
-        rivi = yhteys.execute("SELECT kateinen FROM portfolio WHERE id = 1").fetchone()
-        if rivi is None:
-            raise RuntimeError(
-                "portfolio-taulu on tyhja - aja alusta_tietokanta() ensin"
-            )
-        return rivi["kateinen"]
+        row = connection.execute("SELECT cash FROM portfolio WHERE id = 1").fetchone()
+        if row is None:
+            raise RuntimeError("portfolio-taulu on tyhjä - aja init_database() ensin")
+        return row["cash"]
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def muuta_kateista(delta: float, polku=OLETUS_TIETOKANTA) -> float:
-    yhteys = avaa_yhteys(polku)
+def adjust_cash(delta: float, db_path=DEFAULT_DB_PATH) -> float:
+    connection = open_connection(db_path)
     try:
-        rivi = yhteys.execute("SELECT kateinen FROM portfolio WHERE id = 1").fetchone()
-        if rivi is None:
-            raise RuntimeError(
-                "portfolio-taulu on tyhja - aja alusta_tietokanta() ensin"
-            )
+        row = connection.execute("SELECT cash FROM portfolio WHERE id = 1").fetchone()
+        if row is None:
+            raise RuntimeError("portfolio-taulu on tyhjä - aja init_database() ensin")
 
-        uusi_saldo = rivi["kateinen"] + delta
-        if uusi_saldo < 0:
+        new_balance = row["cash"] + delta
+        if new_balance < 0:
             raise ValueError(
-                f"kateinen menisi negatiiviseksi: {rivi['kateinen']} + {delta} "
-                f"= {uusi_saldo}"
+                f"cash menisi negatiiviseksi: {row['cash']} + {delta} = {new_balance}"
             )
 
-        yhteys.execute(
-            "UPDATE portfolio SET kateinen = ?, paivitetty = ? WHERE id = 1",
-            (uusi_saldo, datetime.now().isoformat(timespec="seconds")),
+        connection.execute(
+            "UPDATE portfolio SET cash = ?, updated_at = ? WHERE id = 1",
+            (new_balance, datetime.now().isoformat(timespec="seconds")),
         )
-        yhteys.commit()
-        return uusi_saldo
+        connection.commit()
+        return new_balance
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def hae_aktiiviset_positiot(polku=OLETUS_TIETOKANTA) -> list[dict]:
-    yhteys = avaa_yhteys(polku)
+def get_open_positions(db_path=DEFAULT_DB_PATH) -> list[dict]:
+    connection = open_connection(db_path)
     try:
-        rivit = yhteys.execute(
-            "SELECT * FROM positions WHERE tila = 'aktiivinen'"
+        rows = connection.execute(
+            "SELECT * FROM positions WHERE status = 'aktiivinen'"
         ).fetchall()
-        return [dict(rivi) for rivi in rivit]
+        return [dict(row) for row in rows]
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def onko_jo_aktiivinen(symboli: str, polku=OLETUS_TIETOKANTA) -> bool:
-    yhteys = avaa_yhteys(polku)
+def has_open_position(symbol: str, db_path=DEFAULT_DB_PATH) -> bool:
+    connection = open_connection(db_path)
     try:
-        rivi = yhteys.execute(
-            "SELECT 1 FROM positions WHERE symboli = ? AND tila = 'aktiivinen' LIMIT 1",
-            (symboli,),
+        row = connection.execute(
+            "SELECT 1 FROM positions WHERE symbol = ? AND status = 'aktiivinen' "
+            "LIMIT 1",
+            (symbol,),
         ).fetchone()
-        return rivi is not None
+        return row is not None
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def lisaa_ehdokas(
-    ajo_id: str,
-    ajotyyppi: str,
-    symboli: str,
-    lahde: str,
-    syy: str | None = None,
-    pisteet: float | None = None,
-    onko_syy_jarkeva: bool | None = None,
-    syy_perustelu: str | None = None,
-    viiteostohinta: float | None = None,
-    sijoitus: int | None = None,
-    jatkoon: int = 0,
-    polku=OLETUS_TIETOKANTA,
+def insert_candidate(
+    run_id: str,
+    run_type: str,
+    symbol: str,
+    source: str,
+    reason: str | None = None,
+    score: float | None = None,
+    reason_is_valid: bool | None = None,
+    reason_note: str | None = None,
+    reference_price: float | None = None,
+    rank: int | None = None,
+    advanced: int = 0,
+    db_path=DEFAULT_DB_PATH,
 ) -> int:
-    yhteys = avaa_yhteys(polku)
+    connection = open_connection(db_path)
     try:
-        kursori = yhteys.execute(
+        cursor = connection.execute(
             """
             INSERT INTO trend_candidates (
-                ajo_id, ajotyyppi, symboli, lahde, syy, pisteet, onko_syy_jarkeva,
-                syy_perustelu, viiteostohinta, sijoitus, jatkoon, pvm
+                run_id, run_type, symbol, source, reason, score, reason_is_valid,
+                reason_note, reference_price, rank, advanced, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                ajo_id,
-                ajotyyppi,
-                symboli,
-                lahde,
-                syy,
-                pisteet,
-                None if onko_syy_jarkeva is None else int(onko_syy_jarkeva),
-                syy_perustelu,
-                viiteostohinta,
-                sijoitus,
-                int(jatkoon),
+                run_id,
+                run_type,
+                symbol,
+                source,
+                reason,
+                score,
+                None if reason_is_valid is None else int(reason_is_valid),
+                reason_note,
+                reference_price,
+                rank,
+                int(advanced),
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
-        yhteys.commit()
-        return kursori.lastrowid
+        connection.commit()
+        return cursor.lastrowid
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def hae_ehdokkaat(
-    ajo_id: str, vain_jatkoon: bool = True, polku=OLETUS_TIETOKANTA
+def get_candidates(
+    run_id: str, advanced_only: bool = True, db_path=DEFAULT_DB_PATH
 ) -> list[dict]:
-    yhteys = avaa_yhteys(polku)
+    connection = open_connection(db_path)
     try:
-        kysely = "SELECT * FROM trend_candidates WHERE ajo_id = ?"
-        parametrit = [ajo_id]
-        if vain_jatkoon:
-            kysely += " AND jatkoon = 1"
-        kysely += " ORDER BY id"
+        query = "SELECT * FROM trend_candidates WHERE run_id = ?"
+        params = [run_id]
+        if advanced_only:
+            query += " AND advanced = 1"
+        query += " ORDER BY id"
 
-        rivit = yhteys.execute(kysely, parametrit).fetchall()
-        return [dict(rivi) for rivi in rivit]
+        rows = connection.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def lisaa_pisteytys(
-    ajo_id: str,
-    ajotyyppi: str,
-    symboli: str,
-    risk_reward_pisteet: float,
-    hinta: float | None = None,
-    indikaattorit_json: str | None = None,
-    perustelu: str | None = None,
-    polku=OLETUS_TIETOKANTA,
+def insert_score(
+    run_id: str,
+    run_type: str,
+    symbol: str,
+    risk_reward_score: float,
+    price: float | None = None,
+    indicators_json: str | None = None,
+    rationale: str | None = None,
+    db_path=DEFAULT_DB_PATH,
 ) -> int:
-    yhteys = avaa_yhteys(polku)
+    connection = open_connection(db_path)
     try:
-        kursori = yhteys.execute(
+        cursor = connection.execute(
             """
             INSERT INTO technical_scores (
-                ajo_id, ajotyyppi, symboli, risk_reward_pisteet, hinta,
-                indikaattorit_json, perustelu, pvm
+                run_id, run_type, symbol, risk_reward_score, price,
+                indicators_json, rationale, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                ajo_id,
-                ajotyyppi,
-                symboli,
-                risk_reward_pisteet,
-                hinta,
-                indikaattorit_json,
-                perustelu,
+                run_id,
+                run_type,
+                symbol,
+                risk_reward_score,
+                price,
+                indicators_json,
+                rationale,
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
-        yhteys.commit()
-        return kursori.lastrowid
+        connection.commit()
+        return cursor.lastrowid
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def hae_pisteytykset(ajo_id: str, polku=OLETUS_TIETOKANTA) -> list[dict]:
-    yhteys = avaa_yhteys(polku)
+def get_scores(run_id: str, db_path=DEFAULT_DB_PATH) -> list[dict]:
+    connection = open_connection(db_path)
     try:
-        rivit = yhteys.execute(
-            "SELECT * FROM technical_scores WHERE ajo_id = ? ORDER BY id",
-            (ajo_id,),
+        rows = connection.execute(
+            "SELECT * FROM technical_scores WHERE run_id = ? ORDER BY id",
+            (run_id,),
         ).fetchall()
-        return [dict(rivi) for rivi in rivit]
+        return [dict(row) for row in rows]
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def lisaa_paatos(
-    ajo_id: str,
-    ajotyyppi: str,
-    symboli: str,
-    paatos: str,
-    perustelu: str | None = None,
-    polku=OLETUS_TIETOKANTA,
+def insert_decision(
+    run_id: str,
+    run_type: str,
+    symbol: str,
+    decision: str,
+    rationale: str | None = None,
+    db_path=DEFAULT_DB_PATH,
 ) -> int:
-    yhteys = avaa_yhteys(polku)
+    connection = open_connection(db_path)
     try:
-        kursori = yhteys.execute(
+        cursor = connection.execute(
             """
-            INSERT INTO decisions (ajo_id, ajotyyppi, symboli, paatos, perustelu, pvm)
+            INSERT INTO decisions (
+                run_id, run_type, symbol, decision, rationale, created_at
+            )
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                ajo_id,
-                ajotyyppi,
-                symboli,
-                paatos,
-                perustelu,
+                run_id,
+                run_type,
+                symbol,
+                decision,
+                rationale,
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
-        yhteys.commit()
-        return kursori.lastrowid
+        connection.commit()
+        return cursor.lastrowid
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def avaa_positio(
-    symboli: str,
-    ostohinta: float,
-    panos_usd: float,
-    osto_ajo_id: str,
+def open_position(
+    symbol: str,
+    buy_price: float,
+    stake_usd: float,
+    buy_run_id: str,
     stop_loss: float | None = None,
-    tavoitehinta: float | None = None,
-    polku=OLETUS_TIETOKANTA,
+    target_price: float | None = None,
+    db_path=DEFAULT_DB_PATH,
 ) -> int:
-    if ostohinta <= 0:
-        raise ValueError(f"ostohinta on oltava positiivinen, saatiin {ostohinta}")
+    if buy_price <= 0:
+        raise ValueError(f"buy_price on oltava positiivinen, saatiin {buy_price}")
 
-    maara = panos_usd / ostohinta
-    nyt = datetime.now().isoformat(timespec="seconds")
+    quantity = stake_usd / buy_price
+    now = datetime.now().isoformat(timespec="seconds")
 
-    yhteys = avaa_yhteys(polku)
+    connection = open_connection(db_path)
     try:
-        kursori = yhteys.execute(
+        cursor = connection.execute(
             """
             INSERT INTO positions (
-                symboli, tila, ostohinta, maara, panos_usd, stop_loss,
-                tavoitehinta, ostopvm, osto_ajo_id
+                symbol, status, buy_price, quantity, stake_usd, stop_loss,
+                target_price, buy_date, buy_run_id
             ) VALUES (?, 'aktiivinen', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                symboli,
-                ostohinta,
-                maara,
-                panos_usd,
+                symbol,
+                buy_price,
+                quantity,
+                stake_usd,
                 stop_loss,
-                tavoitehinta,
-                nyt,
-                osto_ajo_id,
+                target_price,
+                now,
+                buy_run_id,
             ),
         )
-        positio_id = kursori.lastrowid
+        position_id = cursor.lastrowid
 
-        rivi = yhteys.execute("SELECT kateinen FROM portfolio WHERE id = 1").fetchone()
-        if rivi is None:
-            raise RuntimeError(
-                "portfolio-taulu on tyhja - aja alusta_tietokanta() ensin"
-            )
+        row = connection.execute("SELECT cash FROM portfolio WHERE id = 1").fetchone()
+        if row is None:
+            raise RuntimeError("portfolio-taulu on tyhjä - aja init_database() ensin")
 
-        uusi_saldo = rivi["kateinen"] - panos_usd
-        if uusi_saldo < 0:
+        new_balance = row["cash"] - stake_usd
+        if new_balance < 0:
             raise ValueError(
-                f"kateinen menisi negatiiviseksi: {rivi['kateinen']} - {panos_usd} "
-                f"= {uusi_saldo}"
+                f"cash menisi negatiiviseksi: {row['cash']} - {stake_usd} "
+                f"= {new_balance}"
             )
 
-        yhteys.execute(
-            "UPDATE portfolio SET kateinen = ?, paivitetty = ? WHERE id = 1",
-            (uusi_saldo, nyt),
+        connection.execute(
+            "UPDATE portfolio SET cash = ?, updated_at = ? WHERE id = 1",
+            (new_balance, now),
         )
 
-        yhteys.commit()
-        return positio_id
+        connection.commit()
+        return position_id
     except Exception:
-        yhteys.rollback()
+        connection.rollback()
         raise
     finally:
-        yhteys.close()
+        connection.close()
 
 
-def hae_paatokset(ajo_id: str, polku=OLETUS_TIETOKANTA) -> list[dict]:
-    yhteys = avaa_yhteys(polku)
+def get_decisions(run_id: str, db_path=DEFAULT_DB_PATH) -> list[dict]:
+    connection = open_connection(db_path)
     try:
-        rivit = yhteys.execute(
-            "SELECT * FROM decisions WHERE ajo_id = ? ORDER BY id",
-            (ajo_id,),
+        rows = connection.execute(
+            "SELECT * FROM decisions WHERE run_id = ? ORDER BY id",
+            (run_id,),
         ).fetchall()
-        return [dict(rivi) for rivi in rivit]
+        return [dict(row) for row in rows]
     finally:
-        yhteys.close()
+        connection.close()

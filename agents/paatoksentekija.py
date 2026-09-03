@@ -1,19 +1,19 @@
 from core import loki, tietokanta
 from core.asetukset import (
-    ALKUPAAOMA,
-    MAX_HINTAPOIKKEAMA,
-    MAX_POSITIOT,
-    POSITION_KOKO,
-    RR_KYNNYS,
-    SALKUN_STOP_TASO,
+    INITIAL_CAPITAL,
+    MAX_POSITIONS,
+    MAX_PRICE_DRIFT,
+    PORTFOLIO_STOP_LEVEL,
+    POSITION_SIZE,
+    RR_THRESHOLD,
 )
 
-_loki = loki.hae_loki(__name__)
+_loki = loki.get_logger(__name__)
 
 
 def paata_osto(pisteytys: dict, ehdokas: dict | None, tila: dict) -> tuple[str, str]:
-    symboli = pisteytys.get("symboli")
-    hinta = pisteytys.get("hinta")
+    symboli = pisteytys.get("symbol")
+    hinta = pisteytys.get("price")
 
     # 1. hinta puuttuu tai on virheellinen - ilman sita osakemaaraa ei voi
     # laskea eika ehtoa 4 tarkistaa.
@@ -29,19 +29,19 @@ def paata_osto(pisteytys: dict, ehdokas: dict | None, tila: dict) -> tuple[str, 
         return "hylatty", f"{symboli} on jo aktiivinen positio (duplikaatti)"
 
     # 3. RR-kynnys.
-    rr = pisteytys.get("risk_reward_pisteet")
-    if rr is None or rr < RR_KYNNYS:
-        return "hylatty", f"risk_reward_pisteet {rr} < RR_KYNNYS {RR_KYNNYS}"
+    rr = pisteytys.get("risk_reward_score")
+    if rr is None or rr < RR_THRESHOLD:
+        return "hylatty", f"risk_reward_pisteet {rr} < RR_THRESHOLD {RR_THRESHOLD}"
 
     # 4. hinta ei saa olla karannut liian kauas viiteostohinnasta. Jos
     # viiteostohintaa ei ole, ehto ohitetaan (ei hylata) ja se nakyy
     # perustelussa - tama ei ole hiljainen huononeminen.
-    viiteostohinta = ehdokas.get("viiteostohinta") if ehdokas else None
+    viiteostohinta = ehdokas.get("reference_price") if ehdokas else None
     hintaehto_teksti = "viiteostohinta puuttuu, ehto 4 ohitettu"
     if viiteostohinta is not None:
         poikkeama = (hinta - viiteostohinta) / viiteostohinta
         poikkeama_pct = poikkeama * 100
-        raja_pct = MAX_HINTAPOIKKEAMA * 100
+        raja_pct = MAX_PRICE_DRIFT * 100
         if poikkeama > 0:
             hintaehto_teksti = (
                 f"hinta {hinta:.2f} on {poikkeama_pct:.1f} % yli viiteostohinnan "
@@ -52,33 +52,33 @@ def paata_osto(pisteytys: dict, ehdokas: dict | None, tila: dict) -> tuple[str, 
                 f"hinta {hinta:.2f} on {abs(poikkeama_pct):.1f} % alle viiteostohinnan "
                 f"{viiteostohinta:.2f} (raja {raja_pct:.1f} %)"
             )
-        if abs(poikkeama) > MAX_HINTAPOIKKEAMA:
+        if abs(poikkeama) > MAX_PRICE_DRIFT:
             return "hylatty", hintaehto_teksti
 
     # 5. kapasiteetti.
-    if tila["aktiivisia"] >= MAX_POSITIOT:
+    if tila["aktiivisia"] >= MAX_POSITIONS:
         return (
             "hylatty",
             f"aktiivisia positioita {tila['aktiivisia']} "
-            f">= MAX_POSITIOT {MAX_POSITIOT}",
+            f">= MAX_POSITIONS {MAX_POSITIONS}",
         )
 
     # 6. kateinen.
-    if tila["kateinen"] < POSITION_KOKO:
+    if tila["kateinen"] < POSITION_SIZE:
         return (
             "hylatty",
-            f"kateinen {tila['kateinen']:.2f} < POSITION_KOKO {POSITION_KOKO}",
+            f"kateinen {tila['kateinen']:.2f} < POSITION_SIZE {POSITION_SIZE}",
         )
 
     perustelu = (
-        f"risk_reward_pisteet {rr} >= RR_KYNNYS {RR_KYNNYS}; {hintaehto_teksti}; "
-        f"tilaa {tila['aktiivisia']}/{MAX_POSITIOT} positiota, "
+        f"risk_reward_pisteet {rr} >= RR_THRESHOLD {RR_THRESHOLD}; {hintaehto_teksti}; "
+        f"tilaa {tila['aktiivisia']}/{MAX_POSITIONS} positiota, "
         f"kateista {tila['kateinen']:.2f} USD"
     )
     return "osta", perustelu
 
 
-def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.OLETUS_TIETOKANTA) -> str:
+def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.DEFAULT_DB_PATH) -> str:
     if ajotyyppi != "normaali":
         viesti = (
             f"ajotyyppi '{ajotyyppi}': pito/myynti-logiikkaa ei ole viela toteutettu "
@@ -87,41 +87,42 @@ def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.OLETUS_TIETOKANTA) -> str:
         _loki.info(viesti)
         return viesti
 
-    pisteytykset = tietokanta.hae_pisteytykset(ajo_id, polku=polku)
+    pisteytykset = tietokanta.get_scores(ajo_id, db_path=polku)
     if not pisteytykset:
         yhteenveto = "0 pisteytysta, 0 paatosta"
         _loki.info(f"Ajo {ajo_id} ({ajotyyppi}): {yhteenveto}")
         return yhteenveto
 
-    ehdokasrivit = tietokanta.hae_ehdokkaat(ajo_id, vain_jatkoon=False, polku=polku)
+    ehdokasrivit = tietokanta.get_candidates(ajo_id, advanced_only=False, db_path=polku)
     ehdokkaat: dict = {}
     for rivi in ehdokasrivit:
-        if rivi["symboli"] not in ehdokkaat:
-            ehdokkaat[rivi["symboli"]] = rivi
+        if rivi["symbol"] not in ehdokkaat:
+            ehdokkaat[rivi["symbol"]] = rivi
 
-    aktiiviset = tietokanta.hae_aktiiviset_positiot(polku=polku)
-    kateinen = tietokanta.hae_kateinen(polku=polku)
+    aktiiviset = tietokanta.get_open_positions(db_path=polku)
+    kateinen = tietokanta.get_cash(db_path=polku)
 
     # Salkkutason pysaytin ennen silmukkaa. Huom: mittari huomioi vain
     # toteutuneet tappiot (kateinen + avointen positioiden panokset), koska
     # avointen positioiden nykyhintoja ei ole saatavilla ilman API-kutsuja.
-    toteutunut_salkun_arvo = kateinen + sum(p["panos_usd"] for p in aktiiviset)
-    if toteutunut_salkun_arvo < SALKUN_STOP_TASO * ALKUPAAOMA:
+    toteutunut_salkun_arvo = kateinen + sum(p["stake_usd"] for p in aktiiviset)
+    if toteutunut_salkun_arvo < PORTFOLIO_STOP_LEVEL * INITIAL_CAPITAL:
         perustelu = (
             f"salkkutason pysaytin: toteutunut arvo {toteutunut_salkun_arvo:.2f} USD < "
-            f"SALKUN_STOP_TASO {SALKUN_STOP_TASO} * ALKUPAAOMA {ALKUPAAOMA} = "
-            f"{SALKUN_STOP_TASO * ALKUPAAOMA:.2f} USD - ei osteta"
+            f"PORTFOLIO_STOP_LEVEL {PORTFOLIO_STOP_LEVEL} * INITIAL_CAPITAL "
+            f"{INITIAL_CAPITAL} = "
+            f"{PORTFOLIO_STOP_LEVEL * INITIAL_CAPITAL:.2f} USD - ei osteta"
         )
         _loki.warning(f"Ajo {ajo_id}: {perustelu}")
 
         for pisteytys in pisteytykset:
-            tietokanta.lisaa_paatos(
-                ajo_id=ajo_id,
-                ajotyyppi=ajotyyppi,
-                symboli=pisteytys["symboli"],
-                paatos="hylatty",
-                perustelu=perustelu,
-                polku=polku,
+            tietokanta.insert_decision(
+                run_id=ajo_id,
+                run_type=ajotyyppi,
+                symbol=pisteytys["symbol"],
+                decision="hylatty",
+                rationale=perustelu,
+                db_path=polku,
             )
 
         yhteenveto = f"{len(pisteytykset)} paatosta, 0 ostoa (salkun stop-taso)"
@@ -129,20 +130,20 @@ def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.OLETUS_TIETOKANTA) -> str:
         return yhteenveto
 
     def _jarjestysavain(pisteytys: dict):
-        symboli = pisteytys["symboli"]
+        symboli = pisteytys["symbol"]
         ehdokas = ehdokkaat.get(symboli)
-        if ehdokas is None or ehdokas.get("pisteet") is None:
+        if ehdokas is None or ehdokas.get("score") is None:
             ehdokkaan_pisteet = -1
         else:
-            ehdokkaan_pisteet = ehdokas["pisteet"]
-        return (-pisteytys["risk_reward_pisteet"], -ehdokkaan_pisteet, symboli)
+            ehdokkaan_pisteet = ehdokas["score"]
+        return (-pisteytys["risk_reward_score"], -ehdokkaan_pisteet, symboli)
 
     pisteytykset_jarjestettyna = sorted(pisteytykset, key=_jarjestysavain)
 
     tila = {
         "aktiivisia": len(aktiiviset),
         "kateinen": kateinen,
-        "aktiiviset_symbolit": {p["symboli"] for p in aktiiviset},
+        "aktiiviset_symbolit": {p["symbol"] for p in aktiiviset},
     }
 
     ostoja = 0
@@ -150,32 +151,32 @@ def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.OLETUS_TIETOKANTA) -> str:
     viiteostohinta_puuttuu = 0
 
     for pisteytys in pisteytykset_jarjestettyna:
-        symboli = pisteytys["symboli"]
+        symboli = pisteytys["symbol"]
         ehdokas = ehdokkaat.get(symboli)
-        if ehdokas is None or ehdokas.get("viiteostohinta") is None:
+        if ehdokas is None or ehdokas.get("reference_price") is None:
             viiteostohinta_puuttuu += 1
 
         paatos, perustelu = paata_osto(pisteytys, ehdokas, tila)
 
-        tietokanta.lisaa_paatos(
-            ajo_id=ajo_id,
-            ajotyyppi=ajotyyppi,
-            symboli=symboli,
-            paatos=paatos,
-            perustelu=perustelu,
-            polku=polku,
+        tietokanta.insert_decision(
+            run_id=ajo_id,
+            run_type=ajotyyppi,
+            symbol=symboli,
+            decision=paatos,
+            rationale=perustelu,
+            db_path=polku,
         )
 
         if paatos == "osta":
-            tietokanta.avaa_positio(
-                symboli=symboli,
-                ostohinta=pisteytys["hinta"],
-                panos_usd=POSITION_KOKO,
-                osto_ajo_id=ajo_id,
-                polku=polku,
+            tietokanta.open_position(
+                symbol=symboli,
+                buy_price=pisteytys["price"],
+                stake_usd=POSITION_SIZE,
+                buy_run_id=ajo_id,
+                db_path=polku,
             )
             tila["aktiivisia"] += 1
-            tila["kateinen"] -= POSITION_KOKO
+            tila["kateinen"] -= POSITION_SIZE
             tila["aktiiviset_symbolit"].add(symboli)
             ostoja += 1
         else:

@@ -7,16 +7,16 @@ import requests
 
 from core import loki, tietokanta
 from core.asetukset import (
-    EHDOKAS_KYNNYS,
-    EHDOKAS_TAVOITE,
-    MIN_OSAKEKURSSI,
-    VALITTAVAT,
-    YHTEISESIINTYMA_KYNNYS,
-    hae_fmp_avain,
-    hae_twelve_data_avain,
+    CANDIDATE_TARGET,
+    CANDIDATE_THRESHOLD,
+    CO_OCCURRENCE_THRESHOLD,
+    MAX_SELECTED,
+    MIN_SHARE_PRICE,
+    get_fmp_key,
+    get_twelve_data_key,
 )
 
-_loki = loki.hae_loki(__name__)
+_loki = loki.get_logger(__name__)
 
 TIMEOUT = 10
 FMP_BASE = "https://financialmodelingprep.com/stable"
@@ -144,28 +144,28 @@ def _hae_sivutettu(nimi: str, url: str, apikey: str) -> list[dict]:
 
 
 def hae_analyytikkomuutokset() -> list[dict]:
-    apikey = hae_fmp_avain()
+    apikey = get_fmp_key()
     return _hae_sivutettu(
         "grades-latest-news", f"{FMP_BASE}/grades-latest-news", apikey
     )
 
 
 def hae_kongressikaupat() -> list[dict]:
-    apikey = hae_fmp_avain()
+    apikey = get_fmp_key()
     senaatti = _hae_sivutettu("senate-latest", f"{FMP_BASE}/senate-latest", apikey)
     edustajat = _hae_sivutettu("house-latest", f"{FMP_BASE}/house-latest", apikey)
     return senaatti + edustajat
 
 
 def hae_sisapiirikaupat() -> list[dict]:
-    apikey = hae_fmp_avain()
+    apikey = get_fmp_key()
     return _hae_sivutettu(
         "insider-trading-latest", f"{FMP_BASE}/insider-trading/latest", apikey
     )
 
 
 def hae_tavoitehinnat() -> list[dict]:
-    apikey = hae_fmp_avain()
+    apikey = get_fmp_key()
     return _hae_sivutettu(
         "price-target-latest-news", f"{FMP_BASE}/price-target-latest-news", apikey
     )
@@ -283,7 +283,7 @@ def _hae_symbolilista_verkosta(apikey: str) -> set[str]:
 
 
 def hae_us_symbolit() -> set[str]:
-    apikey = hae_twelve_data_avain()
+    apikey = get_twelve_data_key()
 
     vara = _hae_valimuistattu_symbolilista(SYMBOLILISTA_VALIMUISTI_VRK)
     if vara is not None:
@@ -379,7 +379,7 @@ def _hinta_liian_matala(hinta) -> bool:
     # Tuntematon/jasentamaton hinta EI ole liian matala - se paastetaan
     # lapi, koska puuttuva tieto ei ole sama asia kuin huono tieto.
     try:
-        return float(hinta) < MIN_OSAKEKURSSI
+        return float(hinta) < MIN_SHARE_PRICE
     except (TypeError, ValueError):
         return False
 
@@ -611,7 +611,7 @@ def _yhdista_symboli(symboli: str, tieto: dict) -> dict:
     pisteet = 0
     toistuvuus_ekstra = 0
     syy_osat = []
-    vahvat_lahteet = 0  # lahteet joiden oma paras rivi >= YHTEISESIINTYMA_KYNNYS
+    vahvat_lahteet = 0  # lahteet joiden oma paras rivi >= CO_OCCURRENCE_THRESHOLD
     lahteen_paras: dict = {}  # nimi -> (paras_pisteet, paras_hinta)
 
     for nimi in LAHTEET:
@@ -622,7 +622,7 @@ def _yhdista_symboli(symboli: str, tieto: dict) -> dict:
         pisteet += paras_pisteet
         lahteen_paras[nimi] = (paras_pisteet, paras_hinta)
 
-        if paras_pisteet >= YHTEISESIINTYMA_KYNNYS:
+        if paras_pisteet >= CO_OCCURRENCE_THRESHOLD:
             vahvat_lahteet += 1
 
         ekstra = len(havainnot) - 1
@@ -636,7 +636,7 @@ def _yhdista_symboli(symboli: str, tieto: dict) -> dict:
 
     toistuvuusbonus = min(3, toistuvuus_ekstra)
     # +3 kerran jos VAHINTAAN KAKSI lahdetta antoivat itsenaisesti vahintaan
-    # YHTEISESIINTYMA_KYNNYS pistetta. Bonus palkitsee kahden OIKEAN
+    # CO_OCCURRENCE_THRESHOLD pistetta. Bonus palkitsee kahden OIKEAN
     # signaalin yhtapitavyyden, ei kahden heikon rivin sattumaa - 3 pistetta
     # on alin taso jolla lahde on sanonut jotain positiivista (esim. luokitus
     # Buy, tavoite 15-60 % ylapuolella, tai merkittava tuore osto). Sita
@@ -756,17 +756,19 @@ def muodosta_ehdokkaat(
     ]
 
     ehdokkaat.sort(key=lambda e: e["pisteet"], reverse=True)
-    ehdokkaat = ehdokkaat[:EHDOKAS_TAVOITE]
+    ehdokkaat = ehdokkaat[:CANDIDATE_TARGET]
 
     for i, ehdokas in enumerate(ehdokkaat, start=1):
         ehdokas["sijoitus"] = i
 
-    # jatkoon: vahintaan EHDOKAS_KYNNYS pistetta, korkeintaan VALITTAVAT kpl
-    # parhaasta paasta. Lista on jo pistejarjestyksessa, joten kynnyksen
+    # jatkoon: vahintaan CANDIDATE_THRESHOLD pistetta, korkeintaan MAX_SELECTED
+    # kpl parhaasta paasta. Lista on jo pistejarjestyksessa, joten kynnyksen
     # ylittavat ehdokkaat muodostavat aina listan alun - riittaa laskea
-    # kuinka moni ylittaa kynnyksen ja rajata se VALITTAVAT-maaraan.
-    kynnyksen_ylittavia = sum(1 for e in ehdokkaat if e["pisteet"] >= EHDOKAS_KYNNYS)
-    jatkoon_maara = min(kynnyksen_ylittavia, VALITTAVAT)
+    # kuinka moni ylittaa kynnyksen ja rajata se MAX_SELECTED-maaraan.
+    kynnyksen_ylittavia = sum(
+        1 for e in ehdokkaat if e["pisteet"] >= CANDIDATE_THRESHOLD
+    )
+    jatkoon_maara = min(kynnyksen_ylittavia, MAX_SELECTED)
     for i, ehdokas in enumerate(ehdokkaat):
         ehdokas["jatkoon"] = 1 if i < jatkoon_maara else 0
 
@@ -774,17 +776,17 @@ def muodosta_ehdokkaat(
 
 
 def _aja_tarkistus(ajo_id: str, ajotyyppi: str, polku) -> str:
-    aktiiviset = tietokanta.hae_aktiiviset_positiot(polku)
+    aktiiviset = tietokanta.get_open_positions(polku)
 
     for positio in aktiiviset:
-        tietokanta.lisaa_ehdokas(
-            ajo_id=ajo_id,
-            ajotyyppi=ajotyyppi,
-            symboli=positio["symboli"],
-            lahde="positio",
-            syy="Kahden viikon tarkistus",
-            jatkoon=1,
-            polku=polku,
+        tietokanta.insert_candidate(
+            run_id=ajo_id,
+            run_type=ajotyyppi,
+            symbol=positio["symbol"],
+            source="positio",
+            reason="Kahden viikon tarkistus",
+            advanced=1,
+            db_path=polku,
         )
 
     yhteenveto = f"{len(aktiiviset)} aktiivista positiota tarkistukseen"
@@ -793,8 +795,8 @@ def _aja_tarkistus(ajo_id: str, ajotyyppi: str, polku) -> str:
 
 
 def _aja_normaali(ajo_id: str, ajotyyppi: str, polku) -> str:
-    aktiiviset = tietokanta.hae_aktiiviset_positiot(polku)
-    ohita_symbolit = [p["symboli"] for p in aktiiviset]
+    aktiiviset = tietokanta.get_open_positions(polku)
+    ohita_symbolit = [p["symbol"] for p in aktiiviset]
 
     analyytikkorivit: list[dict] = []
     kongressirivit: list[dict] = []
@@ -846,19 +848,19 @@ def _aja_normaali(ajo_id: str, ajotyyppi: str, polku) -> str:
     )
 
     for ehdokas in ehdokkaat:
-        tietokanta.lisaa_ehdokas(
-            ajo_id=ajo_id,
-            ajotyyppi=ajotyyppi,
-            symboli=ehdokas["symboli"],
-            lahde=ehdokas["lahde"],
-            syy=ehdokas["syy"],
-            pisteet=ehdokas["pisteet"],
-            onko_syy_jarkeva=None,
-            syy_perustelu=None,
-            viiteostohinta=ehdokas.get("viiteostohinta"),
-            sijoitus=ehdokas["sijoitus"],
-            jatkoon=ehdokas["jatkoon"],
-            polku=polku,
+        tietokanta.insert_candidate(
+            run_id=ajo_id,
+            run_type=ajotyyppi,
+            symbol=ehdokas["symboli"],
+            source=ehdokas["lahde"],
+            reason=ehdokas["syy"],
+            score=ehdokas["pisteet"],
+            reason_is_valid=None,
+            reason_note=None,
+            reference_price=ehdokas.get("viiteostohinta"),
+            rank=ehdokas["sijoitus"],
+            advanced=ehdokas["jatkoon"],
+            db_path=polku,
         )
 
     jatkoon_maara = sum(1 for e in ehdokkaat if e["jatkoon"] == 1)
@@ -867,7 +869,7 @@ def _aja_normaali(ajo_id: str, ajotyyppi: str, polku) -> str:
     return yhteenveto
 
 
-def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.OLETUS_TIETOKANTA) -> str:
+def aja(ajo_id: str, ajotyyppi: str, polku=tietokanta.DEFAULT_DB_PATH) -> str:
     if ajotyyppi == "tarkistus":
         return _aja_tarkistus(ajo_id, ajotyyppi, polku)
     return _aja_normaali(ajo_id, ajotyyppi, polku)

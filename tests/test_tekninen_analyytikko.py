@@ -214,7 +214,7 @@ def test_hae_kurssidata_eilinen_palkki_palauttaa_kurssidatan(monkeypatch):
 
     monkeypatch.setattr(tekninen_analyytikko, "datetime", _KiinteaKello(kiintea_nyt))
     monkeypatch.setattr(
-        tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain"
+        tekninen_analyytikko, "get_twelve_data_key", lambda: "testiavain"
     )
     monkeypatch.setattr(
         tekninen_analyytikko,
@@ -241,7 +241,7 @@ def test_hae_kurssidata_kesken_olevalta_paivalta_nostaa_virheen(monkeypatch):
 
     monkeypatch.setattr(tekninen_analyytikko, "datetime", _KiinteaKello(kiintea_nyt))
     monkeypatch.setattr(
-        tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain"
+        tekninen_analyytikko, "get_twelve_data_key", lambda: "testiavain"
     )
     monkeypatch.setattr(
         tekninen_analyytikko,
@@ -255,7 +255,7 @@ def test_hae_kurssidata_kesken_olevalta_paivalta_nostaa_virheen(monkeypatch):
 
 def test_hae_kurssidata_puuttuva_datetime_nostaa_virheen(monkeypatch):
     monkeypatch.setattr(
-        tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain"
+        tekninen_analyytikko, "get_twelve_data_key", lambda: "testiavain"
     )
     rivi = _paivapalkki("2026-09-03")
     del rivi["datetime"]
@@ -271,7 +271,7 @@ def test_hae_kurssidata_puuttuva_datetime_nostaa_virheen(monkeypatch):
 
 def test_hae_kurssidata_jasentymaton_datetime_nostaa_virheen(monkeypatch):
     monkeypatch.setattr(
-        tekninen_analyytikko, "hae_twelve_data_avain", lambda: "testiavain"
+        tekninen_analyytikko, "get_twelve_data_key", lambda: "testiavain"
     )
     monkeypatch.setattr(
         tekninen_analyytikko,
@@ -302,14 +302,14 @@ def test_aja_kirjoittaa_pisteytysrivin_oikealla_ajo_idlla_ja_hinnalla(
     tmp_path, monkeypatch
 ):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
-    tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1",
-        ajotyyppi="normaali",
-        symboli="AAPL",
-        lahde="analyytikko",
-        jatkoon=1,
-        polku=polku,
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
     )
 
     kurssidata = _kurssidata(
@@ -324,29 +324,29 @@ def test_aja_kirjoittaa_pisteytysrivin_oikealla_ajo_idlla_ja_hinnalla(
 
     tekninen_analyytikko.aja("ajo1", "normaali", polku=polku)
 
-    rivit = tietokanta.hae_pisteytykset("ajo1", polku=polku)
+    rivit = tietokanta.get_scores("ajo1", db_path=polku)
     assert len(rivit) == 1
-    assert rivit[0]["symboli"] == "AAPL"
-    assert rivit[0]["ajo_id"] == "ajo1"
-    assert rivit[0]["hinta"] == 150.0
+    assert rivit[0]["symbol"] == "AAPL"
+    assert rivit[0]["run_id"] == "ajo1"
+    assert rivit[0]["price"] == 150.0
 
 
 def test_aja_ohittaa_alle_min_osakekurssin_eika_kutsu_atr_rsi(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
-    tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1",
-        ajotyyppi="normaali",
-        symboli="PENNY",
-        lahde="analyytikko",
-        jatkoon=1,
-        polku=polku,
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="PENNY",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
     )
 
     kurssidata = _kurssidata(nykyhinta=2.0)
 
     def _ei_saa_kutsua(symboli):
-        raise AssertionError("ATR/RSI-hakua ei saa tehda alle MIN_OSAKEKURSSI-hinnalla")
+        raise AssertionError("ATR/RSI-hakua ei saa tehda alle MIN_SHARE_PRICE-hinnalla")
 
     monkeypatch.setattr(
         tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata
@@ -356,26 +356,26 @@ def test_aja_ohittaa_alle_min_osakekurssin_eika_kutsu_atr_rsi(tmp_path, monkeypa
 
     tekninen_analyytikko.aja("ajo1", "normaali", polku=polku)
 
-    rivit = tietokanta.hae_pisteytykset("ajo1", polku=polku)
+    rivit = tietokanta.get_scores("ajo1", db_path=polku)
     assert rivit == []
 
 
 def test_aja_ohittaa_alle_min_paivavaihdon_eika_kutsu_atr_rsi(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
-    tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1",
-        ajotyyppi="normaali",
-        symboli="MICRO",
-        lahde="analyytikko",
-        jatkoon=1,
-        polku=polku,
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="MICRO",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
     )
 
     kurssidata = _kurssidata(nykyhinta=20.0, keskimaarainen_paivavaihto_usd=800_000)
 
     def _ei_saa_kutsua(symboli):
-        raise AssertionError("ATR/RSI-hakua ei saa tehda alle MIN_PAIVAVAIHTO-rajan")
+        raise AssertionError("ATR/RSI-hakua ei saa tehda alle MIN_DAILY_TURNOVER-rajan")
 
     monkeypatch.setattr(
         tekninen_analyytikko, "hae_kurssidata", lambda symboli: kurssidata
@@ -385,20 +385,20 @@ def test_aja_ohittaa_alle_min_paivavaihdon_eika_kutsu_atr_rsi(tmp_path, monkeypa
 
     tekninen_analyytikko.aja("ajo1", "normaali", polku=polku)
 
-    rivit = tietokanta.hae_pisteytykset("ajo1", polku=polku)
+    rivit = tietokanta.get_scores("ajo1", db_path=polku)
     assert rivit == []
 
 
 def test_aja_paastaa_lapi_riittavan_paivavaihdon(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
-    tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1",
-        ajotyyppi="normaali",
-        symboli="BIGCO",
-        lahde="analyytikko",
-        jatkoon=1,
-        polku=polku,
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="BIGCO",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
     )
 
     kurssidata = _kurssidata(
@@ -418,29 +418,29 @@ def test_aja_paastaa_lapi_riittavan_paivavaihdon(tmp_path, monkeypatch):
 
     tekninen_analyytikko.aja("ajo1", "normaali", polku=polku)
 
-    rivit = tietokanta.hae_pisteytykset("ajo1", polku=polku)
+    rivit = tietokanta.get_scores("ajo1", db_path=polku)
     assert len(rivit) == 1
-    assert rivit[0]["symboli"] == "BIGCO"
+    assert rivit[0]["symbol"] == "BIGCO"
 
 
 def test_loki_kertoo_kumpi_raja_hylkasi_symbolin(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
-    tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1",
-        ajotyyppi="normaali",
-        symboli="PENNY",
-        lahde="analyytikko",
-        jatkoon=1,
-        polku=polku,
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="PENNY",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
     )
-    tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1",
-        ajotyyppi="normaali",
-        symboli="MICRO",
-        lahde="analyytikko",
-        jatkoon=1,
-        polku=polku,
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="MICRO",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
     )
 
     kurssidata_penny = _kurssidata(nykyhinta=2.0)
@@ -463,31 +463,33 @@ def test_loki_kertoo_kumpi_raja_hylkasi_symbolin(tmp_path, monkeypatch):
 
     # next(): valitaan nimenomaan hylkaysperustelu, ei esim. "viimeisin
     # palkki"-lokiriviä joka mainitsee saman symbolin.
-    penny_viesti = next(v for v in viestit if "PENNY" in v and "MIN_OSAKEKURSSI" in v)
-    micro_viesti = next(v for v in viestit if "MICRO" in v and "MIN_PAIVAVAIHTO" in v)
+    penny_viesti = next(v for v in viestit if "PENNY" in v and "MIN_SHARE_PRICE" in v)
+    micro_viesti = next(
+        v for v in viestit if "MICRO" in v and "MIN_DAILY_TURNOVER" in v
+    )
 
-    assert "MIN_OSAKEKURSSI" in penny_viesti
-    assert "MIN_PAIVAVAIHTO" in micro_viesti
+    assert "MIN_SHARE_PRICE" in penny_viesti
+    assert "MIN_DAILY_TURNOVER" in micro_viesti
 
 
 def test_aja_yhden_symbolin_epaonnistuminen_ei_esta_muita(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
-    tietokanta.alusta_tietokanta(polku)
-    tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1",
-        ajotyyppi="normaali",
-        symboli="BAD",
-        lahde="analyytikko",
-        jatkoon=1,
-        polku=polku,
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="BAD",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
     )
-    tietokanta.lisaa_ehdokas(
-        ajo_id="ajo1",
-        ajotyyppi="normaali",
-        symboli="GOOD",
-        lahde="analyytikko",
-        jatkoon=1,
-        polku=polku,
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="GOOD",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
     )
 
     kurssidata_hyva = _kurssidata(
@@ -505,6 +507,6 @@ def test_aja_yhden_symbolin_epaonnistuminen_ei_esta_muita(tmp_path, monkeypatch)
 
     tekninen_analyytikko.aja("ajo1", "normaali", polku=polku)
 
-    rivit = tietokanta.hae_pisteytykset("ajo1", polku=polku)
+    rivit = tietokanta.get_scores("ajo1", db_path=polku)
     assert len(rivit) == 1
-    assert rivit[0]["symboli"] == "GOOD"
+    assert rivit[0]["symbol"] == "GOOD"
