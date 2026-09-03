@@ -17,6 +17,12 @@ VALITTAVAT = 8            # jatkoon menevien YLARAJA (ei tavoite)
 # saa 5, ja merkittava tuore osto saa 4-5. Kynnys 4 karsii siis juuri ne
 # rivit joilla ei tapahtunut mitaan, mutta paastaa lapi aidot signaalit.
 EHDOKAS_KYNNYS = 4        # minimipisteet jotta ehdokas etenee Agentti 2:lle
+MIN_OSAKEKURSSI = 5.0     # USD; alle taman jaavat ovat liian pieni ja
+                          # epalikvidi kohde 1000 USD:n positiolle
+# 3 pistetta on alin taso jolla lahde on sanonut jotain positiivista (esim.
+# luokitus Buy, tavoite 15-60 % ylapuolella, tai merkittava tuore osto).
+# Sita heikompi rivi on lasna mutta ei ole signaali.
+YHTEISESIINTYMA_KYNNYS = 3
 
 
 def _hae_api_avain(ymparistomuuttuja: str) -> str:

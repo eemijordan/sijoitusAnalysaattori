@@ -9,7 +9,9 @@ from core import loki, tietokanta
 from core.asetukset import (
     EHDOKAS_KYNNYS,
     EHDOKAS_TAVOITE,
+    MIN_OSAKEKURSSI,
     VALITTAVAT,
+    YHTEISESIINTYMA_KYNNYS,
     hae_fmp_avain,
     hae_twelve_data_avain,
 )
@@ -353,7 +355,24 @@ def _on_korotus_luokkavertailulla(uusi: str, edellinen: str) -> bool | None:
     return u > e
 
 
+def _hinta_liian_matala(hinta) -> bool:
+    # Tuntematon/jasentamaton hinta EI ole liian matala - se paastetaan
+    # lapi, koska puuttuva tieto ei ole sama asia kuin huono tieto.
+    try:
+        return float(hinta) < MIN_OSAKEKURSSI
+    except (TypeError, ValueError):
+        return False
+
+
+# grades-latest-news-datan action-kentan tunnetut arvot. Downgrade hylkaa
+# rivin kokonaan, muut kasitellaan omina tapauksinaan alla.
+TUNNETUT_ACTIONIT = {"upgrade", "initialise", "hold", "downgrade"}
+
+
 def _pisteyta_analyytikkorivi(rivi: dict, nyt: datetime) -> tuple[int, str] | None:
+    if _hinta_liian_matala(rivi.get("priceWhenPosted")):
+        return None
+
     pvm = _jasenna_iso_pvm(rivi.get("publishedDate"))
     if pvm is None:
         return None
@@ -363,27 +382,45 @@ def _pisteyta_analyytikkorivi(rivi: dict, nyt: datetime) -> tuple[int, str] | No
     uusi = str(rivi.get("newGrade") or "").strip()
     edellinen = str(rivi.get("previousGrade") or "").strip()
     yhtio = str(rivi.get("gradingCompany") or "Analyytikko").strip()
+    symboli = str(rivi.get("symbol") or "?").strip()
 
     action = rivi.get("action")
     action_teksti = str(action).strip().lower() if action else None
+    tuntematon = False
+
+    if action_teksti is not None and action_teksti not in TUNNETUT_ACTIONIT:
+        _loki.warning(
+            f"grades-latest-news: tuntematon action-arvo {action!r} symbolilla "
+            f"{symboli} - kasitellaan neutraalina (hold)"
+        )
+        tuntematon = True
+        action_teksti = "hold"
 
     if action_teksti == "downgrade":
         return None
 
     if action_teksti is None:
+        # Action-kenttaa ei ole lainkaan riviIla - paatellaan korotus
+        # luokkavertailulla, tuntematon kohdellaan aina hold:na (ei tata haaraa).
         action_teksti = "upgrade" if _on_korotus_luokkavertailulla(uusi, edellinen) else "hold"
 
     pisteet = 0
     if action_teksti == "upgrade":
-        pisteet += 3
+        pisteet += 3  # vanha nakemys parani - vahvin signaali
+    elif action_teksti == "initialise":
+        pisteet += 2  # uusi seuranta aloitettu - tuore mutta ei mielenmuutosta
     elif action_teksti == "hold":
-        pisteet += 1
+        pisteet += 1  # mikaan ei muuttunut - heikoin
 
     if uusi.lower() in HYVAKSYTYT_LUOKITUKSET:
         pisteet += 2
 
-    if action_teksti == "upgrade":
+    if tuntematon:
+        syy = f"{yhtio} muutti luokitusta: {uusi or '?'}"
+    elif action_teksti == "upgrade":
         syy = f"{yhtio} korotti: {edellinen or '?'} -> {uusi or '?'}"
+    elif action_teksti == "initialise":
+        syy = f"{yhtio} aloitti seurannan: {uusi or '?'}"
     else:
         syy = f"{yhtio} piti ennallaan: {uusi or '?'}"
 
@@ -425,7 +462,10 @@ def _sisapiirin_arvo(rivi: dict) -> float | None:
         return None
 
 
-def _pisteyta_sisapiirirvi(rivi: dict, tanaan: date) -> tuple[int, str]:
+def _pisteyta_sisapiirirvi(rivi: dict, tanaan: date) -> tuple[int, str] | None:
+    if _hinta_liian_matala(rivi.get("price")):
+        return None
+
     pisteet = 1  # rivi lapaisi jo suodatuksen (osto)
 
     arvo = _sisapiirin_arvo(rivi)
@@ -465,6 +505,9 @@ def _tavoitehinnan_arvot(rivi: dict) -> tuple[float, float] | None:
 
 
 def _pisteyta_tavoitehintarivi(rivi: dict, nyt: datetime) -> tuple[int, str] | None:
+    if _hinta_liian_matala(rivi.get("priceWhenPosted")):
+        return None
+
     pvm = _jasenna_iso_pvm(rivi.get("publishedDate"))
     if pvm is None:
         return None
@@ -479,10 +522,16 @@ def _pisteyta_tavoitehintarivi(rivi: dict, nyt: datetime) -> tuple[int, str] | N
     if nykyhinta <= 0 or tavoite <= nykyhinta:
         return None
 
+    # Kaannetty U: uskottava nousuvara palkitaan, epauskottava ei. Yli 60 %:n
+    # nousuvara kertoo kaytannossa lahes aina ahdinkotilanteesta tai
+    # vanhentuneesta tavoitehinnasta, ei vahvasta nakemyksesta - siksi sita
+    # kohdellaan heikkona signaalina (+1), ei vahvana (+3).
     nousu_pct = (tavoite - nykyhinta) / nykyhinta * 100
-    if nousu_pct > 15:
+    if nousu_pct > 60:
+        pisteet = 1
+    elif nousu_pct >= 15:
         pisteet = 3
-    elif nousu_pct > 5:
+    elif nousu_pct >= 5:
         pisteet = 2
     else:
         pisteet = 1
@@ -514,6 +563,7 @@ def _yhdista_symboli(symboli: str, tieto: dict) -> dict:
     pisteet = 0
     toistuvuus_ekstra = 0
     syy_osat = []
+    vahvat_lahteet = 0  # lahteet joiden oma paras rivi >= YHTEISESIINTYMA_KYNNYS
 
     for nimi in LAHTEET:
         havainnot = tieto[nimi]
@@ -521,6 +571,9 @@ def _yhdista_symboli(symboli: str, tieto: dict) -> dict:
             continue
         paras_pisteet, paras_syy = _paras(havainnot)
         pisteet += paras_pisteet
+
+        if paras_pisteet >= YHTEISESIINTYMA_KYNNYS:
+            vahvat_lahteet += 1
 
         ekstra = len(havainnot) - 1
         toistuvuus_ekstra += ekstra
@@ -532,12 +585,18 @@ def _yhdista_symboli(symboli: str, tieto: dict) -> dict:
             syy_osat.append(osa)
 
     toistuvuusbonus = min(3, toistuvuus_ekstra)
-    # +3 kerran jos symboli esiintyy USEAMMASSA KUIN YHDESSA lahteessa -
-    # ei lahdeparia kohden, vaikka lahteita olisi kolme.
-    molemmat_bonus = 3 if len(lahteet_mukana) > 1 else 0
+    # +3 kerran jos VAHINTAAN KAKSI lahdetta antoivat itsenaisesti vahintaan
+    # YHTEISESIINTYMA_KYNNYS pistetta. Bonus palkitsee kahden OIKEAN
+    # signaalin yhtapitavyyden, ei kahden heikon rivin sattumaa - 3 pistetta
+    # on alin taso jolla lahde on sanonut jotain positiivista (esim. luokitus
+    # Buy, tavoite 15-60 % ylapuolella, tai merkittava tuore osto). Sita
+    # heikompi rivi on lasna mutta ei ole signaali.
+    molemmat_bonus = 3 if vahvat_lahteet >= 2 else 0
 
     pisteet += toistuvuusbonus + molemmat_bonus
 
+    # lahde-arvo kuvaa mista data tuli, ei pisteytysta - 'molemmat' merkitaan
+    # aina kun useampi kuin yksi lahde loytyi, riippumatta bonuksesta.
     lahde = "molemmat" if len(lahteet_mukana) > 1 else lahteet_mukana[0]
 
     return {
@@ -590,7 +649,10 @@ def muodosta_ehdokkaat(
         suunta = str(rivi.get("transactionType") or "").strip().upper()
         if not suunta.startswith("P-"):
             continue
-        pisteet, syy = _pisteyta_sisapiirirvi(rivi, tanaan)
+        tulos = _pisteyta_sisapiirirvi(rivi, tanaan)
+        if tulos is None:
+            continue
+        pisteet, syy = tulos
         _lisaa_havainto(tulokset, symboli, "sisapiiri", pisteet, syy)
 
     for rivi in tavoitehintarivit:
