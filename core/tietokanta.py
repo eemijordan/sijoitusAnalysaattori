@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS technical_scores (
     ajotyyppi TEXT NOT NULL,
     symboli TEXT NOT NULL,
     risk_reward_pisteet REAL NOT NULL,
+    hinta REAL,
     indikaattorit_json TEXT,
     perustelu TEXT,
     pvm TEXT NOT NULL
@@ -232,6 +233,7 @@ def lisaa_pisteytys(
     ajotyyppi: str,
     symboli: str,
     risk_reward_pisteet: float,
+    hinta: float | None = None,
     indikaattorit_json: str | None = None,
     perustelu: str | None = None,
     polku=OLETUS_TIETOKANTA,
@@ -241,15 +243,16 @@ def lisaa_pisteytys(
         kursori = yhteys.execute(
             """
             INSERT INTO technical_scores (
-                ajo_id, ajotyyppi, symboli, risk_reward_pisteet,
+                ajo_id, ajotyyppi, symboli, risk_reward_pisteet, hinta,
                 indikaattorit_json, perustelu, pvm
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ajo_id,
                 ajotyyppi,
                 symboli,
                 risk_reward_pisteet,
+                hinta,
                 indikaattorit_json,
                 perustelu,
                 datetime.now().isoformat(timespec="seconds"),
@@ -299,6 +302,58 @@ def lisaa_paatos(
         )
         yhteys.commit()
         return kursori.lastrowid
+    finally:
+        yhteys.close()
+
+
+def avaa_positio(
+    symboli: str,
+    ostohinta: float,
+    panos_usd: float,
+    osto_ajo_id: str,
+    stop_loss: float | None = None,
+    tavoitehinta: float | None = None,
+    polku=OLETUS_TIETOKANTA,
+) -> int:
+    if ostohinta <= 0:
+        raise ValueError(f"ostohinta on oltava positiivinen, saatiin {ostohinta}")
+
+    maara = panos_usd / ostohinta
+    nyt = datetime.now().isoformat(timespec="seconds")
+
+    yhteys = avaa_yhteys(polku)
+    try:
+        kursori = yhteys.execute(
+            """
+            INSERT INTO positions (
+                symboli, tila, ostohinta, maara, panos_usd, stop_loss,
+                tavoitehinta, ostopvm, osto_ajo_id
+            ) VALUES (?, 'aktiivinen', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (symboli, ostohinta, maara, panos_usd, stop_loss, tavoitehinta, nyt, osto_ajo_id),
+        )
+        positio_id = kursori.lastrowid
+
+        rivi = yhteys.execute("SELECT kateinen FROM portfolio WHERE id = 1").fetchone()
+        if rivi is None:
+            raise RuntimeError("portfolio-taulu on tyhja - aja alusta_tietokanta() ensin")
+
+        uusi_saldo = rivi["kateinen"] - panos_usd
+        if uusi_saldo < 0:
+            raise ValueError(
+                f"kateinen menisi negatiiviseksi: {rivi['kateinen']} - {panos_usd} = {uusi_saldo}"
+            )
+
+        yhteys.execute(
+            "UPDATE portfolio SET kateinen = ?, paivitetty = ? WHERE id = 1",
+            (uusi_saldo, nyt),
+        )
+
+        yhteys.commit()
+        return positio_id
+    except Exception:
+        yhteys.rollback()
+        raise
     finally:
         yhteys.close()
 

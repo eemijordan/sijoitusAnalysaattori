@@ -295,11 +295,14 @@ def hae_us_symbolit() -> set[str]:
             f"Symbolilistan haku epaonnistui eika kelvollista valimuistia ole: {virhe}"
         ) from virhe
 
+    # TODO tarkista myöhemmässä vaiheessa onko järkevä
+
     if len(symbolit) < MIN_US_SYMBOLIMAARA:
         raise RuntimeError(
-            f"Twelve Data /stocks palautti epauskottavan pienen symbolijoukon "
+            f"Twelve Data /stocks palautti epauskottavan pienen symbolijoukon "     
             f"({len(symbolit)} kpl) - parsinta on todennakoisesti rikki"
         )
+    # TODO
 
     _tallenna_symbolilista_valimuistiin(symbolit)
     _loki.info(f"twelvedata-stocks: haettu tuoreena, {len(symbolit)} hyvaksyttya US-symbolia")
@@ -348,6 +351,7 @@ def _amount_ylaraja(amount) -> float | None:
 
 
 def _on_korotus_luokkavertailulla(uusi: str, edellinen: str) -> bool | None:
+    ''' '''
     u = LUOKKA_JARJESTYS.get(uusi.strip().lower())
     e = LUOKKA_JARJESTYS.get(edellinen.strip().lower())
     if u is None or e is None:
@@ -362,6 +366,18 @@ def _hinta_liian_matala(hinta) -> bool:
         return float(hinta) < MIN_OSAKEKURSSI
     except (TypeError, ValueError):
         return False
+
+
+def _poimi_hinta(rivi: dict, kentta: str) -> float | None:
+    # Puolustava poiminta viiteostohintaa varten: puuttuva, jasentymaton
+    # tai ei-positiivinen arvo palauttaa None eika nosta poikkeusta.
+    try:
+        hinta = float(rivi.get(kentta))
+    except (TypeError, ValueError):
+        return None
+    if hinta <= 0:
+        return None
+    return hinta
 
 
 # grades-latest-news-datan action-kentan tunnetut arvot. Downgrade hylkaa
@@ -546,14 +562,18 @@ def _pisteyta_tavoitehintarivi(rivi: dict, nyt: datetime) -> tuple[int, str] | N
 LAHTEET = ("analyytikko", "kongressi", "sisapiiri", "tavoitehinta")
 
 
-def _lisaa_havainto(tulokset: dict, symboli: str, lahde: str, pisteet: int, syy: str) -> None:
+def _lisaa_havainto(
+    tulokset: dict, symboli: str, lahde: str, pisteet: int, syy: str, hinta: float | None = None
+) -> None:
     tieto = tulokset.setdefault(symboli, {nimi: [] for nimi in LAHTEET})
-    tieto[lahde].append((pisteet, syy))
+    tieto[lahde].append((pisteet, syy, hinta))
 
 
-def _paras(havainnot: list[tuple[int, str]]) -> tuple[int, str | None]:
+def _paras(havainnot: list[tuple[int, str, float | None]]) -> tuple[int, str | None, float | None]:
     if not havainnot:
-        return 0, None
+        return 0, None, None
+    # key vertailee vain pisteita (h[0]), joten hintoja (h[2], voi olla
+    # None) ei koskaan verrata keskenaan.
     return max(havainnot, key=lambda h: h[0])
 
 
@@ -564,13 +584,15 @@ def _yhdista_symboli(symboli: str, tieto: dict) -> dict:
     toistuvuus_ekstra = 0
     syy_osat = []
     vahvat_lahteet = 0  # lahteet joiden oma paras rivi >= YHTEISESIINTYMA_KYNNYS
+    lahteen_paras: dict = {}  # nimi -> (paras_pisteet, paras_hinta)
 
     for nimi in LAHTEET:
         havainnot = tieto[nimi]
         if not havainnot:
             continue
-        paras_pisteet, paras_syy = _paras(havainnot)
+        paras_pisteet, paras_syy, paras_hinta = _paras(havainnot)
         pisteet += paras_pisteet
+        lahteen_paras[nimi] = (paras_pisteet, paras_hinta)
 
         if paras_pisteet >= YHTEISESIINTYMA_KYNNYS:
             vahvat_lahteet += 1
@@ -599,11 +621,29 @@ def _yhdista_symboli(symboli: str, tieto: dict) -> dict:
     # aina kun useampi kuin yksi lahde loytyi, riippumatta bonuksesta.
     lahde = "molemmat" if len(lahteet_mukana) > 1 else lahteet_mukana[0]
 
+    # viiteostohinta: vahvin lahde jolla on hinta voittaa (suurin
+    # paras_pisteet jonka paras_hinta ei ole None). Tasapisteissa ratkaisee
+    # LAHTEET-jarjestys (kayty lapi jarjestyksessa, vaihdetaan vain jos
+    # aidosti parempi loytyy), jotta tulos on toistettava. Jos yhdellakaan
+    # lahteella ei ole hintaa, jaa None.
+    viiteostohinta = None
+    paras_hinnan_pisteet = None
+    for nimi in LAHTEET:
+        if nimi not in lahteen_paras:
+            continue
+        ehdokkaan_pisteet, ehdokkaan_hinta = lahteen_paras[nimi]
+        if ehdokkaan_hinta is None:
+            continue
+        if paras_hinnan_pisteet is None or ehdokkaan_pisteet > paras_hinnan_pisteet:
+            paras_hinnan_pisteet = ehdokkaan_pisteet
+            viiteostohinta = ehdokkaan_hinta
+
     return {
         "symboli": symboli,
         "pisteet": pisteet,
         "lahde": lahde,
         "syy": "; ".join(syy_osat),
+        "viiteostohinta": viiteostohinta,
     }
 
 
@@ -630,7 +670,8 @@ def muodosta_ehdokkaat(
         if tulos is None:
             continue
         pisteet, syy = tulos
-        _lisaa_havainto(tulokset, symboli, "analyytikko", pisteet, syy)
+        hinta = _poimi_hinta(rivi, "priceWhenPosted")
+        _lisaa_havainto(tulokset, symboli, "analyytikko", pisteet, syy, hinta)
 
     for rivi in kongressirivit:
         symboli = str(rivi.get("symbol") or "").strip()
@@ -663,7 +704,8 @@ def muodosta_ehdokkaat(
         if tulos is None:
             continue
         pisteet, syy = tulos
-        _lisaa_havainto(tulokset, symboli, "tavoitehinta", pisteet, syy)
+        hinta = _poimi_hinta(rivi, "priceWhenPosted")
+        _lisaa_havainto(tulokset, symboli, "tavoitehinta", pisteet, syy, hinta)
 
     ehdokkaat = [_yhdista_symboli(symboli, tieto) for symboli, tieto in tulokset.items()]
 
@@ -767,7 +809,7 @@ def _aja_normaali(ajo_id: str, ajotyyppi: str, polku) -> str:
             pisteet=ehdokas["pisteet"],
             onko_syy_jarkeva=None,
             syy_perustelu=None,
-            viiteostohinta=None,
+            viiteostohinta=ehdokas.get("viiteostohinta"),
             sijoitus=ehdokas["sijoitus"],
             jatkoon=ehdokas["jatkoon"],
             polku=polku,

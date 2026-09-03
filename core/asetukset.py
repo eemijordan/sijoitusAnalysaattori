@@ -23,6 +23,22 @@ MIN_OSAKEKURSSI = 5.0     # USD; alle taman jaavat ovat liian pieni ja
 # luokitus Buy, tavoite 15-60 % ylapuolella, tai merkittava tuore osto).
 # Sita heikompi rivi on lasna mutta ei ole signaali.
 YHTEISESIINTYMA_KYNNYS = 3
+# Markkina-arvo ei ole saatavilla ilmaistasolla (FMP palauttaa 402:n pienille
+# yhtioille, Twelve Datan Basicissa ei ole fundamenttidataa), joten
+# keskimaarainen paivavaihto USD:ssa toimii yrityskoon korvikkeena.
+MIN_PAIVAVAIHTO = 5_000_000  # USD/paiva, keskiarvo 252 paivalta. Karsii
+                              # mikroyhtiot; keskikokoiset yhtiot ylittavat
+                              # taman selvasti.
+# Agentti 1:n signaali voi olla jopa 14 vrk vanha. Jos hinta on ehtinyt
+# liikkua kauas signaalin hetken hinnasta, tilanne ei ole enaa se jota
+# signaali kuvasi. Raja on kaksisuuntainen: ylospain karannut hinta
+# tarkoittaa etta sisaanmeno meni ohi, jyrkka pudotus etta jotain tapahtui
+# signaalin jalkeen. Molemmat hylataan, mutta eri perustelutekstilla.
+MAX_HINTAPOIKKEAMA = 0.05   # 5 %
+# Salkkutason pysaytin. Jokainen ostoehto katsoo yhta osaketta kerrallaan,
+# joten ilman tata botti ostaa yhta innokkaasti 20 % pakkasella kuin
+# ensimmaisena paivana.
+SALKUN_STOP_TASO = 0.80     # osuus ALKUPAAOMA:sta
 
 
 def _hae_api_avain(ymparistomuuttuja: str) -> str:

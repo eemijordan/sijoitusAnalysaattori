@@ -531,6 +531,151 @@ def test_jos_yksikaan_ei_ylita_kynnysta_jatkoon_on_tyhja():
     assert all(e["jatkoon"] == 0 for e in ehdokkaat)
 
 
+# --- viiteostohinta: kulkee pisteytyksen rinnalla, ei sen lapi ---
+
+
+def test_viiteostohinta_analyytikkorivilta():
+    rivi = [_analyytikkorivi("AAPL", hinta=123.45)]
+
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(rivi, [], [], [], [], US_SYMBOLIT)
+
+    assert ehdokkaat[0]["viiteostohinta"] == 123.45
+
+
+def test_viiteostohinta_tavoitehintarivilta():
+    rivi = [_tavoitehintarivi("AAPL", tavoite=150.0, nykyhinta=111.11)]
+
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat([], [], [], rivi, [], US_SYMBOLIT)
+
+    assert ehdokkaat[0]["viiteostohinta"] == 111.11
+
+
+def test_viiteostohinta_puuttuu_pelkasta_kongressirivista():
+    rivi = [_kongressirivi("AAPL")]
+
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat([], rivi, [], [], [], US_SYMBOLIT)
+
+    assert ehdokkaat[0]["viiteostohinta"] is None
+
+
+def test_viiteostohinta_ei_tule_sisapiirilahteesta():
+    # Tarkoituksellinen rajaus: _pisteyta_sisapiirirvi():lla ei ole
+    # ylaikarajaa (vain ika-perusteiset pisteet), joten sen hinta voi olla
+    # mielivaltaisen vanha - huono vertailukohta MAX_HINTAPOIKKEAMAlle. Ala
+    # "korjaa" tata lisaamatta samalla hinnan ikaa ja skaalattua toleranssia
+    # (ks. CLAUDE.md, Agentti 1).
+    rivi = [_sisapiirirvi("AAPL", hinta=200.0)]
+
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat([], [], rivi, [], [], US_SYMBOLIT)
+
+    assert ehdokkaat[0]["viiteostohinta"] is None
+
+
+def test_viiteostohinta_valitaan_vahvimmasta_lahteesta():
+    analyytikko = [_analyytikkorivi("AAPL", hinta=100.0)]  # upgrade+Buy = 5p
+    tavoitehinta = [_tavoitehintarivi("AAPL", tavoite=102.0, nykyhinta=200.0)]  # +2 % = 1p
+
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        analyytikko, [], [], tavoitehinta, [], US_SYMBOLIT
+    )
+
+    assert ehdokkaat[0]["viiteostohinta"] == 100.0
+
+
+def test_viiteostohinta_tasapisteissa_lahteet_jarjestys_ratkaisee():
+    # analyytikko: hold+Buy = 3p. tavoitehinta: +30 % = 3p. Tasapeli - LAHTEET
+    # on ("analyytikko", "kongressi", "sisapiiri", "tavoitehinta"), joten
+    # analyytikko voittaa.
+    analyytikko = [
+        _analyytikkorivi("AAPL", uusi="Buy", edellinen="Buy", action="hold", hinta=111.0)
+    ]
+    tavoitehinta = [_tavoitehintarivi("AAPL", tavoite=130.0, nykyhinta=222.0)]
+
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        analyytikko, [], [], tavoitehinta, [], US_SYMBOLIT
+    )
+
+    assert ehdokkaat[0]["viiteostohinta"] == 111.0
+
+
+def test_viiteostohinta_puuttuu_tai_jasentymaton_ei_vaikuta_pisteisiin():
+    normaali = [_analyytikkorivi("AAPL")]
+    ehdokkaat_normaali = trendinmetsastaja.muodosta_ehdokkaat(
+        normaali, [], [], [], [], US_SYMBOLIT
+    )
+    odotetut_pisteet = ehdokkaat_normaali[0]["pisteet"]
+
+    for rikki_arvo in (None, "ei-numero"):
+        rikki = [{**_analyytikkorivi("AAPL"), "priceWhenPosted": rikki_arvo}]
+        ehdokkaat_rikki = trendinmetsastaja.muodosta_ehdokkaat(
+            rikki, [], [], [], [], US_SYMBOLIT
+        )
+        assert ehdokkaat_rikki[0]["viiteostohinta"] is None
+        assert ehdokkaat_rikki[0]["pisteet"] == odotetut_pisteet
+
+    puuttuu = _analyytikkorivi("AAPL")
+    del puuttuu["priceWhenPosted"]
+    ehdokkaat_puuttuu = trendinmetsastaja.muodosta_ehdokkaat(
+        [puuttuu], [], [], [], [], US_SYMBOLIT
+    )
+    assert ehdokkaat_puuttuu[0]["viiteostohinta"] is None
+    assert ehdokkaat_puuttuu[0]["pisteet"] == odotetut_pisteet
+
+
+def test_priceWhenPosted_nolla_tai_negatiivinen_ei_tuota_viiteostohintaa():
+    # priceWhenPosted <= 0 hylkaa koko rivin jo MIN_OSAKEKURSSI-tarkistuksessa
+    # (_hinta_liian_matala), ennen kuin viiteostohintaa edes poimitaan -
+    # rivi ei siis paady ehdokkaaksi lainkaan, ei vain ilman hintaa.
+    nolla = [_analyytikkorivi("AAAA", hinta=0.0)]
+    negatiivinen = [_analyytikkorivi("BBBB", hinta=-10.0)]
+
+    assert trendinmetsastaja.muodosta_ehdokkaat(nolla, [], [], [], [], US_SYMBOLIT) == []
+    assert trendinmetsastaja.muodosta_ehdokkaat(negatiivinen, [], [], [], [], US_SYMBOLIT) == []
+
+
+def test_poimi_hinta_puolustava_kasittely():
+    # Suora yksikkotesti _poimi_hinta():lle: 0/negatiivinen hinta ei ole
+    # havaittavissa muodosta_ehdokkaat():n kautta, koska pisteytysfunktiot
+    # hylkaavat koko rivin jo aiemmin samalla kentalla (ks. testi ylla).
+    # Tama testaa apufunktion oman puolustavan kasittelyn suoraan.
+    poimi = trendinmetsastaja._poimi_hinta
+    assert poimi({"priceWhenPosted": 0}, "priceWhenPosted") is None
+    assert poimi({"priceWhenPosted": -5}, "priceWhenPosted") is None
+    assert poimi({"priceWhenPosted": None}, "priceWhenPosted") is None
+    assert poimi({}, "priceWhenPosted") is None
+    assert poimi({"priceWhenPosted": "ei-numero"}, "priceWhenPosted") is None
+    assert poimi({"priceWhenPosted": "123.45"}, "priceWhenPosted") == 123.45
+
+
+def test_viiteostohinta_toistuvista_riveista_tulee_parhaasta_rivista():
+    rivit = [
+        _analyytikkorivi("AAPL", uusi="Neutral", action="hold", hinta=50.0),  # 1p
+        _analyytikkorivi("AAPL", uusi="Buy", action="upgrade", hinta=222.0),  # 5p - paras
+        _analyytikkorivi("AAPL", uusi="Hold", action="hold", hinta=10.0),  # 1p
+    ]
+
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(rivit, [], [], [], [], US_SYMBOLIT)
+
+    assert ehdokkaat[0]["viiteostohinta"] == 222.0
+
+
+def test_regressio_pisteet_lahde_syy_muuttumattomia_monilahdetapauksessa():
+    analyytikko = [_analyytikkorivi("AAPL")]
+    kongressi = [_kongressirivi("AAPL")]
+
+    ehdokkaat = trendinmetsastaja.muodosta_ehdokkaat(
+        analyytikko, kongressi, [], [], [], US_SYMBOLIT
+    )
+
+    aapl = ehdokkaat[0]
+    assert aapl["lahde"] == "molemmat"
+    assert aapl["pisteet"] == 5 + 5 + 3  # sama kuin ennen viiteostohinta-muutosta
+    assert "korotti" in aapl["syy"]
+    assert "Kongressiosto" in aapl["syy"]
+    # uusi kentta lisatty vanhojen rinnalle, ei niiden tilalle
+    assert aapl["viiteostohinta"] == 100.0
+
+
 # --- aja(): tietokantaan kirjoittava kerros, hakufunktiot monkeypatchattu ---
 
 
