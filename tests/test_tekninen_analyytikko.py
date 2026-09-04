@@ -2,6 +2,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
+import requests
 
 from agents import tekninen_analyytikko
 from core import tietokanta
@@ -295,6 +296,136 @@ def test_laske_kurssitunnusluvut_palauttaa_viimeisimman_palkin():
     assert tunnusluvut["current_price"] == 100.0
 
 
+# --- _fetch_twelvedata_json(): tilapaisten verkkovirheiden uudelleenyritys ---
+
+
+class _VastausTynkka:
+    """Korvaa requests.Response:in testeissa."""
+
+    def __init__(self, status_code=200, json_data=None):
+        self.status_code = status_code
+        self._json_data = json_data
+
+    def json(self):
+        return self._json_data
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"HTTP {self.status_code}")
+
+
+def test_hae_json_aikakatkaisu_ensin_sitten_onnistuu(monkeypatch):
+    kutsut = []
+
+    def _fake_get(url, params=None, timeout=None):
+        kutsut.append(timeout)
+        if len(kutsut) == 1:
+            raise requests.exceptions.Timeout("read timed out")
+        return _VastausTynkka(json_data={"values": [{"rsi": "50"}]})
+
+    monkeypatch.setattr(tekninen_analyytikko.requests, "get", _fake_get)
+    monkeypatch.setattr(tekninen_analyytikko.time, "sleep", lambda s: None)
+
+    data = tekninen_analyytikko._fetch_twelvedata_json("url", {"symbol": "AAPL"})
+
+    assert data == {"values": [{"rsi": "50"}]}
+    assert len(kutsut) == 2
+
+
+def test_hae_json_yhteysvirhe_ensin_sitten_onnistuu(monkeypatch):
+    kutsut = []
+
+    def _fake_get(url, params=None, timeout=None):
+        kutsut.append(timeout)
+        if len(kutsut) == 1:
+            raise requests.exceptions.ConnectionError("connection reset")
+        return _VastausTynkka(json_data={"values": [{"atr": "1.5"}]})
+
+    monkeypatch.setattr(tekninen_analyytikko.requests, "get", _fake_get)
+    monkeypatch.setattr(tekninen_analyytikko.time, "sleep", lambda s: None)
+
+    data = tekninen_analyytikko._fetch_twelvedata_json("url", {"symbol": "AAPL"})
+
+    assert data == {"values": [{"atr": "1.5"}]}
+    assert len(kutsut) == 2
+
+
+def test_hae_json_molemmat_yritykset_aikakatkeavat_nostaa_poikkeuksen(monkeypatch):
+    kutsut = []
+
+    def _fake_get(url, params=None, timeout=None):
+        kutsut.append(timeout)
+        raise requests.exceptions.Timeout("read timed out")
+
+    nukutut = []
+    monkeypatch.setattr(tekninen_analyytikko.requests, "get", _fake_get)
+    monkeypatch.setattr(tekninen_analyytikko.time, "sleep", lambda s: nukutut.append(s))
+
+    with pytest.raises(requests.exceptions.Timeout):
+        tekninen_analyytikko._fetch_twelvedata_json("url", {"symbol": "AAPL"})
+
+    assert len(kutsut) == 2
+    # Odotetaan uudelleenyrityksen valissa JA ennen kuin poikkeus nousee
+    # ylospain, koska myos epaonnistunut kutsu kasvattaa krediittilaskuria.
+    assert nukutut == [
+        tekninen_analyytikko.SYNC_SECONDS,
+        tekninen_analyytikko.SYNC_SECONDS,
+    ]
+
+
+def test_hae_json_http_404_ei_yrita_uudelleen(monkeypatch):
+    kutsut = []
+
+    def _fake_get(url, params=None, timeout=None):
+        kutsut.append(timeout)
+        return _VastausTynkka(status_code=404, json_data={})
+
+    monkeypatch.setattr(tekninen_analyytikko.requests, "get", _fake_get)
+    monkeypatch.setattr(tekninen_analyytikko.time, "sleep", lambda s: None)
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        tekninen_analyytikko._fetch_twelvedata_json("url", {"symbol": "AAPL"})
+
+    assert len(kutsut) == 1
+
+
+def test_hae_json_429_polku_toimii_ennallaan(monkeypatch):
+    kutsut = []
+
+    def _fake_get(url, params=None, timeout=None):
+        kutsut.append(timeout)
+        if len(kutsut) == 1:
+            return _VastausTynkka(status_code=429, json_data={"code": 429})
+        return _VastausTynkka(json_data={"values": [{"rsi": "50"}]})
+
+    nukutut = []
+    monkeypatch.setattr(tekninen_analyytikko.requests, "get", _fake_get)
+    monkeypatch.setattr(tekninen_analyytikko.time, "sleep", lambda s: nukutut.append(s))
+
+    data = tekninen_analyytikko._fetch_twelvedata_json("url", {"symbol": "AAPL"})
+
+    assert data == {"values": [{"rsi": "50"}]}
+    assert len(kutsut) == 2
+    assert tekninen_analyytikko.LIMIT_WAIT_SECONDS in nukutut
+
+
+def test_hae_json_kayttaa_erillisia_yhteys_ja_lukuaikakatkaisuja(monkeypatch):
+    saadut_timeoutit = []
+
+    def _fake_get(url, params=None, timeout=None):
+        saadut_timeoutit.append(timeout)
+        return _VastausTynkka(json_data={"values": []})
+
+    monkeypatch.setattr(tekninen_analyytikko.requests, "get", _fake_get)
+    monkeypatch.setattr(tekninen_analyytikko.time, "sleep", lambda s: None)
+
+    tekninen_analyytikko._fetch_twelvedata_json("url", {"symbol": "AAPL"})
+
+    assert saadut_timeoutit == [
+        (tekninen_analyytikko.CONNECT_TIMEOUT, tekninen_analyytikko.READ_TIMEOUT)
+    ]
+
+
 # --- run(): tietokantaan kirjoittava kerros, hakufunktiot monkeypatchattu ---
 
 
@@ -496,15 +627,75 @@ def test_aja_yhden_symbolin_epaonnistuminen_ei_esta_muita(tmp_path, monkeypatch)
 
     def _fetch_price_data(symbol):
         if symbol == "BAD":
-            raise RuntimeError("simuloitu verkkovirhe")
+            raise requests.exceptions.RequestException("simuloitu verkkovirhe")
         return price_data_hyva
 
     monkeypatch.setattr(tekninen_analyytikko, "fetch_price_data", _fetch_price_data)
     monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 1.5)
     monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 50.0)
 
-    tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+    summary = tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
 
     rivit = tietokanta.get_scores("ajo1", db_path=polku)
     assert len(rivit) == 1
     assert rivit[0]["symbol"] == "GOOD"
+    assert summary == "1 pisteytysta kirjattu, 1 epaonnistui (BAD)"
+
+
+def test_aja_kaikki_onnistuu_yhteenveto_ilman_epaonnistumisosaa(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="GOOD",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data_hyva = _price_data(
+        current_price=100.0, sma50=90.0, sma200=80.0, high_52w=120.0, low_52w=60.0
+    )
+
+    monkeypatch.setattr(
+        tekninen_analyytikko, "fetch_price_data", lambda symbol: price_data_hyva
+    )
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 1.5)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 50.0)
+
+    summary = tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+    assert summary == "1 pisteytysta kirjattu"
+
+
+def test_aja_ohjelmointivirhe_calculate_scoressa_ei_ohitu_hiljaa(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="BUGGY",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data_hyva = _price_data(
+        current_price=100.0, sma50=90.0, sma200=80.0, high_52w=120.0, low_52w=60.0
+    )
+
+    def _rikkinainen_calculate_score(price_data, atr, rsi):
+        raise KeyError("ei liity kurssidatan jasentamiseen")
+
+    monkeypatch.setattr(
+        tekninen_analyytikko, "fetch_price_data", lambda symbol: price_data_hyva
+    )
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 1.5)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 50.0)
+    monkeypatch.setattr(
+        tekninen_analyytikko, "calculate_score", _rikkinainen_calculate_score
+    )
+
+    with pytest.raises(KeyError):
+        tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)

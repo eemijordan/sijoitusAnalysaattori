@@ -17,7 +17,11 @@ class IncompletePriceDataError(RuntimeError):
     """Nostetaan kun uusin saatavilla oleva kurssipalkki on vielä kesken."""
 
 
-TIMEOUT = 10
+# Yhteyden muodostuksen pitaa olla nopeaa - jumittunut yhteys on aito vika
+# eika hitautta. Luku sen sijaan saa kestaa: time_series palauttaa 252
+# palkkia, mika on satoja kilotavuja JSONia.
+CONNECT_TIMEOUT = 5
+READ_TIMEOUT = 30
 TWELVE_DATA_BASE = "https://api.twelvedata.com"
 
 # Ilmaistaso: 8 krediittia minuutissa, liukuva laskuri jota myos
@@ -39,6 +43,34 @@ def _is_rate_limit_error(response: requests.Response, data) -> bool:
     )
 
 
+def _get_with_retry(url: str, params: dict) -> requests.Response:
+    """Tekee GET-kutsun, uusintayrittäen kerran tilapäisestä verkkovirheestä.
+
+    Tilapäinen verkkovirhe tarkoittaa tässä aikakatkaisua tai yhteysvirhettä.
+    Nämä eivät ole kiintiövirheitä kuten 429 (ks. _fetch_twelvedata_json),
+    vaan hetkellisiä häiriöitä joiden uudelleenyritys todennäköisesti
+    korjaa. Odottaa SYNC_SECONDS ennen uudelleenyritystä ja myös silloin
+    kun toinenkin yritys epäonnistuu, koska epäonnistunutkin kutsu
+    kasvattaa Twelve Datan liukuvaa krediittilaskuria - poikkeuksen ei saa
+    antaa nousta suoraan ilman tätä taukoa.
+    """
+    try:
+        return requests.get(url, params=params, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as error:
+        _loki.warning(
+            f"verkkovirhe, odotetaan {SYNC_SECONDS}s ja yritetaan uudelleen: "
+            f"{url} - {error}"
+        )
+        time.sleep(SYNC_SECONDS)
+        try:
+            return requests.get(
+                url, params=params, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            time.sleep(SYNC_SECONDS)
+            raise
+
+
 def _fetch_twelvedata_json(url: str, params: dict) -> dict:
     """Tekee GET-kutsun ja odottaa SYNC_SECONDS sen jälkeen.
 
@@ -47,7 +79,7 @@ def _fetch_twelvedata_json(url: str, params: dict) -> dict:
     Nostaa poikkeuksen jos toinenkin yritys epäonnistuu 429:ään tai jos
     HTTP-kutsu epäonnistuu muuten.
     """
-    response = requests.get(url, params=params, timeout=TIMEOUT)
+    response = _get_with_retry(url, params)
     try:
         data = response.json()
     except ValueError:
@@ -60,7 +92,7 @@ def _fetch_twelvedata_json(url: str, params: dict) -> dict:
         )
         time.sleep(LIMIT_WAIT_SECONDS)
 
-        response = requests.get(url, params=params, timeout=TIMEOUT)
+        response = _get_with_retry(url, params)
         try:
             data = response.json()
         except ValueError:
@@ -379,6 +411,7 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     candidates = tietokanta.get_candidates(run_id, advanced_only=True, db_path=db_path)
 
     recorded = 0
+    failed_symbols = []
     first_logged = False
     for candidate in candidates:
         symbol = candidate["symbol"]
@@ -414,29 +447,39 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
 
             atr = fetch_atr(symbol)
             rsi = fetch_rsi(symbol)
-
-            score, indicators, rationale = calculate_score(price_data, atr, rsi)
-
-            tietokanta.insert_score(
-                run_id=run_id,
-                run_type=run_type,
-                symbol=symbol,
-                risk_reward_score=score,
-                price=current_price,
-                indicators_json=json.dumps(indicators),
-                rationale=rationale,
-                db_path=db_path,
-            )
-            recorded += 1
         except IncompletePriceDataError:
             # Ei nielaista: jos porssi on auki, jokainen symboli on yhta
             # pilalla, joten koko ajon pitaa keskeytya eika vain ohittaa
             # yksi symboli. Orkestroija kaarii ja lokittaa taman.
             raise
-        except Exception as error:
+        except (requests.RequestException, ValueError, KeyError, TypeError) as error:
+            # Vain verkko- ja datanjasennysvirheet kurssidatan haussa ja
+            # jasennyksessa ohitetaan symbolikohtaisesti. calculate_score()
+            # ja insert_score() ovat tarkoituksella tama try-lohkon
+            # ulkopuolella: niiden virhe on ohjelmointivirhe, ei
+            # verkkovirhe, eika se saa nayttaa samalta.
             _loki.warning(f"{symbol}: kasittely epaonnistui, ohitetaan - {error}")
+            failed_symbols.append(symbol)
             continue
 
+        score, indicators, rationale = calculate_score(price_data, atr, rsi)
+
+        tietokanta.insert_score(
+            run_id=run_id,
+            run_type=run_type,
+            symbol=symbol,
+            risk_reward_score=score,
+            price=current_price,
+            indicators_json=json.dumps(indicators),
+            rationale=rationale,
+            db_path=db_path,
+        )
+        recorded += 1
+
     summary = f"{recorded} pisteytysta kirjattu"
-    _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
+    if failed_symbols:
+        summary += f", {len(failed_symbols)} epaonnistui ({', '.join(failed_symbols)})"
+        _loki.error(f"Ajo {run_id} ({run_type}): {summary}")
+    else:
+        _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
     return summary
