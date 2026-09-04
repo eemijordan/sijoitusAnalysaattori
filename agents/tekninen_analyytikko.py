@@ -1,3 +1,5 @@
+"""Agentti 2: hakee kurssidatan ja pisteyttää ehdokkaat riski/tuotto-suhteella."""
+
 import json
 import time
 from datetime import date, datetime
@@ -12,7 +14,7 @@ _loki = loki.get_logger(__name__)
 
 
 class IncompletePriceDataError(RuntimeError):
-    pass
+    """Nostetaan kun uusin saatavilla oleva kurssipalkki on vielä kesken."""
 
 
 TIMEOUT = 10
@@ -38,10 +40,13 @@ def _is_rate_limit_error(response: requests.Response, data) -> bool:
 
 
 def _fetch_twelvedata_json(url: str, params: dict) -> dict:
-    """Tekee GET-kutsun ja odottaa SYNC_SECONDS sen jalkeen (aina, myos
-    virheen jalkeen). Jos vastaus on 429, odottaa LIMIT_WAIT_SECONDS ja
-    yrittaa samaa kutsua uudelleen kerran. Nostaa poikkeuksen jos toinenkin
-    yritys epaonnistuu 429:aan tai jos HTTP-kutsu epaonnistuu muuten."""
+    """Tekee GET-kutsun ja odottaa SYNC_SECONDS sen jälkeen.
+
+    Odottaa SYNC_SECONDS aina, myös virheen jälkeen. Jos vastaus on 429,
+    odottaa LIMIT_WAIT_SECONDS ja yrittää samaa kutsua uudelleen kerran.
+    Nostaa poikkeuksen jos toinenkin yritys epäonnistuu 429:ään tai jos
+    HTTP-kutsu epäonnistuu muuten.
+    """
     response = requests.get(url, params=params, timeout=TIMEOUT)
     try:
         data = response.json()
@@ -74,6 +79,7 @@ def _fetch_twelvedata_json(url: str, params: dict) -> dict:
 
 
 def is_bar_ready(bar_date: date, today_et: date) -> tuple[bool, str]:
+    """Kertoo onko bar_date aidosti aikaisempi kuin kuluva päivä New Yorkissa."""
     if bar_date < today_et:
         return True, ""
     reason = (
@@ -124,6 +130,11 @@ def _calculate_price_stats(bars: list[dict]) -> dict:
 
 
 def fetch_price_data(symbol: str) -> dict | None:
+    """Hakee 252 päivän kurssihistorian ja laskee siitä tunnusluvut.
+
+    Nostaa IncompletePriceDataError:in jos uusin palkki on kesken oleva
+    pörssipäivä. Palauttaa None jos Twelve Data ei palauttanut dataa lainkaan.
+    """
     apikey = get_twelve_data_key()
     data = _fetch_twelvedata_json(
         f"{TWELVE_DATA_BASE}/time_series",
@@ -180,6 +191,7 @@ def _extract_indicator_value(data: dict, key: str) -> float | None:
 
 
 def fetch_atr(symbol: str) -> float | None:
+    """Hakee tuoreimman ATR-arvon (Average True Range)."""
     apikey = get_twelve_data_key()
     data = _fetch_twelvedata_json(
         f"{TWELVE_DATA_BASE}/atr",
@@ -189,6 +201,7 @@ def fetch_atr(symbol: str) -> float | None:
 
 
 def fetch_rsi(symbol: str) -> float | None:
+    """Hakee tuoreimman RSI-arvon (Relative Strength Index)."""
     apikey = get_twelve_data_key()
     data = _fetch_twelvedata_json(
         f"{TWELVE_DATA_BASE}/rsi",
@@ -252,6 +265,10 @@ def _build_rationale(
 def calculate_score(
     price_data: dict, atr: float | None, rsi: float | None
 ) -> tuple[float, dict, str]:
+    """Laskee risk/reward-pisteet (0-10) riskin, trendin, aseman ja RSI:n summana.
+
+    Palauttaa (pisteet, indikaattorit, perustelu).
+    """
     current_price = price_data["current_price"]
     sma50 = price_data.get("sma50")
     sma200 = price_data.get("sma200")
@@ -351,6 +368,11 @@ def calculate_score(
 
 
 def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    """Hakee ajon kandidaatit, pisteyttää jokaisen ja kirjaa pisteytykset kantaan.
+
+    Yhden symbolin virhe ei keskeytä koko ajoa, paitsi IncompletePriceDataError
+    jos pörssi on auki (silloin kaikki symbolit ovat yhtä pilalla).
+    """
     # Normaali- ja tarkistusajo lukevat molemmat jatkoon=1-rivit samalla
     # tavalla - Agentti 1 on jo kirjoittanut aktiiviset positiot naiksi
     # tarkistusajossa, joten sama haara riittaa.

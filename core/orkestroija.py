@@ -1,3 +1,5 @@
+"""Ajaa neljä agenttia peräkkäin ja keskeyttää ajon jos jokin epäonnistuu."""
+
 import sys
 
 from agents import paatoksentekija, raportoija, tekninen_analyytikko, trendinmetsastaja
@@ -14,6 +16,11 @@ _AGENTIT = [
 
 
 def run_normal(db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    """Alustaa tietokannan ja ajaa kaikki neljä agenttia järjestyksessä.
+
+    Nostaa RuntimeErrorin jos jokin agentti epäonnistuu - loput agentit
+    jäävät silloin ajamatta.
+    """
     run_id = tietokanta.new_run_id()
     run_type = "normaali"
 

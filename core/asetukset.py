@@ -1,3 +1,5 @@
+"""Sijoitusvakiot ja API-avainten haku ympäristömuuttujista."""
+
 import os
 from pathlib import Path
 
@@ -53,8 +55,10 @@ def _get_api_key(env_var: str) -> str:
 
 
 def get_twelve_data_key() -> str:
+    """Palauttaa Twelve Data -API-avaimen ympäristömuuttujasta."""
     return _get_api_key("TWELVE_DATA_API_KEY")
 
 
 def get_fmp_key() -> str:
+    """Palauttaa FMP-API-avaimen ympäristömuuttujasta."""
     return _get_api_key("FMP_API_KEY")

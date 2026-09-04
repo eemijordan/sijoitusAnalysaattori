@@ -1,3 +1,5 @@
+"""Diagnostiikkatyökalu FMP- ja Twelve Data -päätepisteiden koetteluun käsin."""
+
 from collections import Counter
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -106,6 +108,7 @@ SUUNTAKENTAT = [
 
 
 def _turvallinen_url(url: str, apikey: str) -> str:
+    """Palauttaa URL:n tulostettavaksi niin että apikey-parametri on peitetty."""
     pyynto = requests.Request("GET", url, params={"apikey": apikey}).prepare()
     parsed = urlparse(pyynto.url)
     parametrit = parse_qsl(parsed.query)
@@ -117,6 +120,7 @@ def _turvallinen_url(url: str, apikey: str) -> str:
 
 
 def _koeta(nimi: str, url: str, apikey: str):
+    """Tekee GET-kutsun yhteen päätepisteeseen ja tulostaa vastauksen muodon."""
     print(f"\n=== {nimi} ===")
     print(f"URL: {_turvallinen_url(url, apikey)}")
 
@@ -180,6 +184,10 @@ def _tulosta_suuntajakaumat(tulokset: dict) -> None:
 def _vertaa_paria(
     nimi_ilman: str, nimi_suodatettu: str, kentta: str, tulokset: dict
 ) -> None:
+    """Vertailee suodattamatonta ja suodatettua vastausta.
+
+    Paljastaa jos suodatinparametri jää API:ssa huomiotta.
+    """
     print(f"\n--- {nimi_ilman} vs {nimi_suodatettu} (suuntakentta: {kentta}) ---")
 
     data_ilman = tulokset.get(nimi_ilman)
@@ -307,6 +315,7 @@ def _tulosta_pe_analyysi(tulokset: dict, symbolit: list) -> None:
 
 
 def main() -> None:
+    """Koettelee kaikki määritellyt päätepisteet ja tulostaa tulokset konsoliin."""
     fmp_avain = get_fmp_key()
     twelve_data_avain = get_twelve_data_key()
 

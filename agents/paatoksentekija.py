@@ -1,3 +1,5 @@
+"""Agentti 3: päättää kunkin pisteytyksen perusteella osto, pito vai myynti."""
+
 from core import loki, tietokanta
 from core.asetukset import (
     INITIAL_CAPITAL,
@@ -12,6 +14,10 @@ _loki = loki.get_logger(__name__)
 
 
 def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, str]:
+    """Soveltaa 6 ostoehtoa järjestyksessä ja palauttaa (päätös, perustelu).
+
+    Päätös on 'osta' tai 'hylatty'. Ensimmäinen läpäisemätön ehto ratkaisee.
+    """
     symbol = score.get("symbol")
     price = score.get("price")
 
@@ -80,6 +86,11 @@ def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, s
 
 
 def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    """Pisteyttää ajon kandidaatit, tarkistaa salkun stop-tason ja tekee ostot.
+
+    Käsittelee pisteytykset RR-järjestyksessä parhaasta huonoimpaan. Jokaisesta
+    pisteytyksestä syntyy tasan yksi päätösrivi riippumatta lopputuloksesta.
+    """
     if run_type != "normaali":
         message = (
             f"ajotyyppi '{run_type}': pito/myynti-logiikkaa ei ole viela toteutettu "

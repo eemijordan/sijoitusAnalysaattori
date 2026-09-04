@@ -1,3 +1,5 @@
+"""SQLite-skeema ja CRUD-funktiot - agenttien yhteinen rajapinta."""
+
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -79,6 +81,7 @@ ON positions(symbol) WHERE status = 'aktiivinen';
 
 
 def open_connection(db_path=DEFAULT_DB_PATH):
+    """Avaa SQLite-yhteyden ja luo väliin jäävät hakemistot tarvittaessa."""
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
@@ -86,6 +89,10 @@ def open_connection(db_path=DEFAULT_DB_PATH):
 
 
 def init_database(db_path=DEFAULT_DB_PATH):
+    """Luo skeeman jos puuttuu ja alustaa portfolio-rivin INITIAL_CAPITALiin.
+
+    Turvallinen ajaa useaan kertaan samaan kantaan.
+    """
     connection = open_connection(db_path)
     try:
         connection.executescript(SCHEMA)
@@ -109,10 +116,12 @@ def init_database(db_path=DEFAULT_DB_PATH):
 
 
 def new_run_id() -> str:
+    """Muodostaa aikaleimapohjaisen ajo-id:n."""
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def get_cash(db_path=DEFAULT_DB_PATH) -> float:
+    """Palauttaa portfolion käteissaldon."""
     connection = open_connection(db_path)
     try:
         row = connection.execute("SELECT cash FROM portfolio WHERE id = 1").fetchone()
@@ -124,6 +133,10 @@ def get_cash(db_path=DEFAULT_DB_PATH) -> float:
 
 
 def adjust_cash(delta: float, db_path=DEFAULT_DB_PATH) -> float:
+    """Muuttaa käteissaldoa delta:lla ja palauttaa uuden saldon.
+
+    Nostaa ValueErrorin jos saldo menisi negatiiviseksi.
+    """
     connection = open_connection(db_path)
     try:
         row = connection.execute("SELECT cash FROM portfolio WHERE id = 1").fetchone()
@@ -147,6 +160,7 @@ def adjust_cash(delta: float, db_path=DEFAULT_DB_PATH) -> float:
 
 
 def get_open_positions(db_path=DEFAULT_DB_PATH) -> list[dict]:
+    """Palauttaa kaikki tilassa 'aktiivinen' olevat positiot."""
     connection = open_connection(db_path)
     try:
         rows = connection.execute(
@@ -158,6 +172,7 @@ def get_open_positions(db_path=DEFAULT_DB_PATH) -> list[dict]:
 
 
 def has_open_position(symbol: str, db_path=DEFAULT_DB_PATH) -> bool:
+    """Kertoo onko symbolilla jo aktiivinen positio."""
     connection = open_connection(db_path)
     try:
         row = connection.execute(
@@ -184,6 +199,7 @@ def insert_candidate(
     advanced: int = 0,
     db_path=DEFAULT_DB_PATH,
 ) -> int:
+    """Lisää rivin trend_candidates-tauluun ja palauttaa sen id:n."""
     connection = open_connection(db_path)
     try:
         cursor = connection.execute(
@@ -217,6 +233,7 @@ def insert_candidate(
 def get_candidates(
     run_id: str, advanced_only: bool = True, db_path=DEFAULT_DB_PATH
 ) -> list[dict]:
+    """Palauttaa ajon ehdokkaat, oletuksena vain jatkoon menneet (advanced=1)."""
     connection = open_connection(db_path)
     try:
         query = "SELECT * FROM trend_candidates WHERE run_id = ?"
@@ -241,6 +258,7 @@ def insert_score(
     rationale: str | None = None,
     db_path=DEFAULT_DB_PATH,
 ) -> int:
+    """Lisää rivin technical_scores-tauluun ja palauttaa sen id:n."""
     connection = open_connection(db_path)
     try:
         cursor = connection.execute(
@@ -268,6 +286,7 @@ def insert_score(
 
 
 def get_scores(run_id: str, db_path=DEFAULT_DB_PATH) -> list[dict]:
+    """Palauttaa ajon kaikki tekniset pisteytykset."""
     connection = open_connection(db_path)
     try:
         rows = connection.execute(
@@ -287,6 +306,7 @@ def insert_decision(
     rationale: str | None = None,
     db_path=DEFAULT_DB_PATH,
 ) -> int:
+    """Lisää rivin decisions-tauluun ja palauttaa sen id:n."""
     connection = open_connection(db_path)
     try:
         cursor = connection.execute(
@@ -320,6 +340,11 @@ def open_position(
     target_price: float | None = None,
     db_path=DEFAULT_DB_PATH,
 ) -> int:
+    """Avaa uuden position ja vähentää sen hinnan käteisestä samassa transaktiossa.
+
+    Nostaa ValueErrorin jos buy_price ei ole positiivinen tai käteinen menisi
+    negatiiviseksi.
+    """
     if buy_price <= 0:
         raise ValueError(f"buy_price on oltava positiivinen, saatiin {buy_price}")
 
@@ -374,6 +399,7 @@ def open_position(
 
 
 def get_decisions(run_id: str, db_path=DEFAULT_DB_PATH) -> list[dict]:
+    """Palauttaa ajon kaikki päätökset."""
     connection = open_connection(db_path)
     try:
         rows = connection.execute(

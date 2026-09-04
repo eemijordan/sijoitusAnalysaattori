@@ -1,3 +1,5 @@
+"""Agentti 1: hakee neljä signaalilähdettä ja pisteyttää niistä ehdokkaat."""
+
 import json
 import re
 from datetime import date, datetime, timezone
@@ -79,6 +81,7 @@ RATING_ORDER = {
 
 
 def _fetch_json_cached(name: str, url: str, params: dict):
+    """Hakee JSON:in päivän mittaisella tiedostovälimuistilla."""
     VALIMUISTI_DIR.mkdir(parents=True, exist_ok=True)
     file_path = VALIMUISTI_DIR / f"{name}_{date.today().isoformat()}.json"
 
@@ -97,6 +100,7 @@ def _fetch_json_cached(name: str, url: str, params: dict):
 
 
 def _fetch_paginated(name: str, url: str, apikey: str) -> list[dict]:
+    """Hakee sivutetun FMP-päätepisteen, pysähtyen tyhjään tai toistuvaan sivuun."""
     all_rows: list[dict] = []
     first_page = None
 
@@ -144,6 +148,7 @@ def _fetch_paginated(name: str, url: str, apikey: str) -> list[dict]:
 
 
 def fetch_analyst_changes() -> list[dict]:
+    """Hakee FMP:n tuoreimmat analyytikkoluokitusmuutokset."""
     apikey = get_fmp_key()
     return _fetch_paginated(
         "grades-latest-news", f"{FMP_BASE}/grades-latest-news", apikey
@@ -151,6 +156,7 @@ def fetch_analyst_changes() -> list[dict]:
 
 
 def fetch_congress_trades() -> list[dict]:
+    """Hakee FMP:n tuoreimmat senaatin ja edustajainhuoneen kaupat."""
     apikey = get_fmp_key()
     senate = _fetch_paginated("senate-latest", f"{FMP_BASE}/senate-latest", apikey)
     house = _fetch_paginated("house-latest", f"{FMP_BASE}/house-latest", apikey)
@@ -158,6 +164,7 @@ def fetch_congress_trades() -> list[dict]:
 
 
 def fetch_insider_trades() -> list[dict]:
+    """Hakee FMP:n tuoreimmat sisäpiirikaupat."""
     apikey = get_fmp_key()
     return _fetch_paginated(
         "insider-trading-latest", f"{FMP_BASE}/insider-trading/latest", apikey
@@ -165,6 +172,7 @@ def fetch_insider_trades() -> list[dict]:
 
 
 def fetch_price_targets() -> list[dict]:
+    """Hakee FMP:n tuoreimmat analyytikkojen tavoitehinnat."""
     apikey = get_fmp_key()
     return _fetch_paginated(
         "price-target-latest-news", f"{FMP_BASE}/price-target-latest-news", apikey
@@ -178,6 +186,7 @@ def _cached_symbol_list_files() -> list[Path]:
 
 
 def _fetch_cached_symbol_list(max_age_days: int) -> tuple[set[str], int] | None:
+    """Palauttaa uusimman korkeintaan max_age_days ikäisen välimuistin."""
     today = date.today()
     for file_path in _cached_symbol_list_files():
         date_str = file_path.stem.removeprefix(f"{SYMBOL_LIST_FILENAME}_")
@@ -245,6 +254,7 @@ def _fetch_all_country_symbols(apikey: str) -> list[dict]:
 
 
 def _fetch_symbol_list_from_network(apikey: str) -> set[str]:
+    """Hakee US-symbolit pörsseittäin, tai koko maan listalta jos suodatin ei toimi."""
     by_exchange: dict[str, list[dict]] = {}
     param_works = True
 
@@ -281,6 +291,10 @@ def _fetch_symbol_list_from_network(apikey: str) -> set[str]:
 
 
 def fetch_us_symbols() -> set[str]:
+    """Hakee hyväksyttyjen US-pörssien (NASDAQ, NYSE) symbolit, 30 vrk välimuistilla.
+
+    Nostaa RuntimeErrorin jos haku epäonnistuu eikä kelvollista välimuistia ole.
+    """
     apikey = get_twelve_data_key()
 
     cached = _fetch_cached_symbol_list(SYMBOL_LIST_CACHE_DAYS)
@@ -349,6 +363,7 @@ def _parse_date(date_str):
 
 
 def _amount_upper_bound(amount) -> float | None:
+    """Poimii ylärajan kongressidatan amount-kentästä, esim. "$100,001 - $250,000"."""
     if isinstance(amount, (int, float)):
         return float(amount)
     if not isinstance(amount, str):
@@ -367,7 +382,7 @@ def _amount_upper_bound(amount) -> float | None:
 def _is_upgrade_by_rating_comparison(
     new_rating: str, previous_rating: str
 ) -> bool | None:
-    """ """
+    """Vertailee kahta luokitusta, None jos jompikumpi on tuntematon."""
     u = RATING_ORDER.get(new_rating.strip().lower())
     e = RATING_ORDER.get(previous_rating.strip().lower())
     if u is None or e is None:
@@ -376,8 +391,11 @@ def _is_upgrade_by_rating_comparison(
 
 
 def _price_too_low(price) -> bool:
-    # Tuntematon/jasentamaton hinta EI ole liian matala - se paastetaan
-    # lapi, koska puuttuva tieto ei ole sama asia kuin huono tieto.
+    """Kertoo onko hinta alle MIN_SHARE_PRICEn.
+
+    Tuntematon/jäsentämätön hinta EI ole liian matala - se päästetään läpi,
+    koska puuttuva tieto ei ole sama asia kuin huono tieto.
+    """
     try:
         return float(price) < MIN_SHARE_PRICE
     except (TypeError, ValueError):
@@ -385,8 +403,11 @@ def _price_too_low(price) -> bool:
 
 
 def _extract_price(row: dict, field: str) -> float | None:
-    # Puolustava poiminta viiteostohintaa varten: puuttuva, jasentymaton
-    # tai ei-positiivinen arvo palauttaa None eika nosta poikkeusta.
+    """Poimii hinnan riviltä puolustavasti viiteostohintaa varten.
+
+    Puuttuva, jäsentymätön tai ei-positiivinen arvo palauttaa None eikä
+    nosta poikkeusta.
+    """
     try:
         price = float(row.get(field))
     except (TypeError, ValueError):
@@ -402,6 +423,7 @@ KNOWN_ACTIONS = {"upgrade", "initialise", "hold", "downgrade"}
 
 
 def _score_analyst_row(row: dict, now: datetime) -> tuple[int, str] | None:
+    """Pisteyttää yhden analyytikkorivin, tai None jos rivi hylätään kokonaan."""
     if _price_too_low(row.get("priceWhenPosted")):
         return None
 
@@ -464,6 +486,7 @@ def _score_analyst_row(row: dict, now: datetime) -> tuple[int, str] | None:
 
 
 def _score_congress_row(row: dict, today: date) -> tuple[int, str]:
+    """Pisteyttää yhden kongressiostorivin summan ja tuoreuden perusteella."""
     score = 1  # rivi lapaisi jo suodatuksen (osto)
 
     upper_bound = _amount_upper_bound(row.get("amount"))
@@ -499,6 +522,7 @@ def _insider_value(row: dict) -> float | None:
 
 
 def _score_insider_row(row: dict, today: date) -> tuple[int, str] | None:
+    """Pisteyttää yhden sisäpiiriostorivin arvon ja tuoreuden perusteella."""
     if _price_too_low(row.get("price")):
         return None
 
@@ -541,6 +565,7 @@ def _price_target_values(row: dict) -> tuple[float, float] | None:
 
 
 def _score_price_target_row(row: dict, now: datetime) -> tuple[int, str] | None:
+    """Pisteyttää yhden tavoitehintarivin nousuvaran uskottavuuden perusteella."""
     if _price_too_low(row.get("priceWhenPosted")):
         return None
 
@@ -608,6 +633,13 @@ def _best(
 
 
 def _combine_symbol(symbol: str, entry: dict) -> dict:
+    """Yhdistää yhden symbolin kaikkien lähteiden havainnot yhdeksi ehdokkaaksi.
+
+    Pisteet = paras rivi per lähde + toistuvuusbonus + yhteisesiintymäbonus.
+    Yhteisesiintymäbonus (+3) palkitsee kahden aidon signaalin yhtäpitävyyttä:
+    se annetaan kerran jos vähintään kaksi lähdettä ylsivät itsenäisesti
+    CO_OCCURRENCE_THRESHOLDiin - ei kahden heikon rivin sattumaa.
+    """
     sources_present = [name for name in SOURCES if entry[name]]
 
     score = 0
@@ -637,12 +669,6 @@ def _combine_symbol(symbol: str, entry: dict) -> dict:
             reason_parts.append(part)
 
     repeat_bonus = min(3, repeat_extra)
-    # +3 kerran jos VAHINTAAN KAKSI lahdetta antoivat itsenaisesti vahintaan
-    # CO_OCCURRENCE_THRESHOLD pistetta. Bonus palkitsee kahden OIKEAN
-    # signaalin yhtapitavyyden, ei kahden heikon rivin sattumaa - 3 pistetta
-    # on alin taso jolla lahde on sanonut jotain positiivista (esim. luokitus
-    # Buy, tavoite 15-60 % ylapuolella, tai merkittava tuore osto). Sita
-    # heikompi rivi on lasna mutta ei ole signaali.
     both_bonus = 3 if strong_sources >= 2 else 0
 
     score += repeat_bonus + both_bonus
@@ -685,6 +711,12 @@ def build_candidates(
     skip_symbols: list[str],
     us_symbols: set[str],
 ) -> list[dict]:
+    """Pisteyttää neljän lähteen rivit ja yhdistää ne symbolikohtaisiksi ehdokkaiksi.
+
+    Palauttaa enintään CANDIDATE_TARGET ehdokasta pistejärjestyksessä, joista
+    parhaat merkitään jatkoon (advanced=1) CANDIDATE_THRESHOLD ja MAX_SELECTED
+    -rajojen mukaisesti.
+    """
     skip = set(skip_symbols or [])
     allowed = set(us_symbols or [])
     now = datetime.now(timezone.utc)
@@ -758,6 +790,7 @@ def build_candidates(
 
 
 def _run_check(run_id: str, run_type: str, db_path) -> str:
+    """Merkitsee kaikki aktiiviset positiot jatkoon kahden viikon tarkistusta varten."""
     open_positions = tietokanta.get_open_positions(db_path)
 
     for position in open_positions:
@@ -777,6 +810,12 @@ def _run_check(run_id: str, run_type: str, db_path) -> str:
 
 
 def _run_normal(run_id: str, run_type: str, db_path) -> str:
+    """Hakee kaikki neljä lähdettä, muodostaa ehdokkaat ja kirjaa ne kantaan.
+
+    Nostaa RuntimeErrorin jos kaikki neljä lähdettä epäonnistuvat, tai jos
+    US-symbolisuodatus epäonnistuu (sille ei ole "yksi lähde saa epäonnistua"
+    -toleranssia).
+    """
     open_positions = tietokanta.get_open_positions(db_path)
     skip_symbols = [p["symbol"] for p in open_positions]
 
@@ -852,6 +891,7 @@ def _run_normal(run_id: str, run_type: str, db_path) -> str:
 
 
 def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    """Ajaa tarkistus- tai normaaliajon run_type:n mukaan."""
     if run_type == "tarkistus":
         return _run_check(run_id, run_type, db_path)
     return _run_normal(run_id, run_type, db_path)

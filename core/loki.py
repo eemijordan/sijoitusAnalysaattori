@@ -1,3 +1,5 @@
+"""Yhteinen lokitus tiedostoon ja konsoliin."""
+
 import logging
 from pathlib import Path
 
@@ -34,5 +36,6 @@ def _init_logging() -> None:
 
 
 def get_logger(name: str) -> logging.Logger:
+    """Palauttaa nimetyn loggerin, alustaen tiedosto- ja konsolikäsittelijät ensin."""
     _init_logging()
     return logging.getLogger(f"{_ROOT_NAME}.{name}")
