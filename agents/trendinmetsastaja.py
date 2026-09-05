@@ -25,8 +25,9 @@ FMP_BASE = "https://financialmodelingprep.com/stable"
 TWELVE_DATA_STOCKS_URL = "https://api.twelvedata.com/stocks"
 VALIMUISTI_DIR = tietokanta.DATA_DIR / "valimuisti"
 # Kirjoita-kerran-arkisto (ks. CLAUDE.md) - toisin kuin valimuisti, tata ei
-# koskaan siivota eika luetakaan taalta, vain kirjoitetaan.
-ARKISTO_DIR = tietokanta.DATA_DIR / "arkisto"
+# koskaan siivota eika luetakaan taalta, vain kirjoitetaan. Sama polku jota
+# tietokanta.py kayttaa runs-metatiedostolle (_ajo.json) - yksi totuuden lahde.
+ARKISTO_DIR = tietokanta.ARKISTO_DIR
 
 PAGE_SIZE = 10
 # Talla FMP-tasolla vain page=0 on sallittu (katto on tilikohtainen, todettu

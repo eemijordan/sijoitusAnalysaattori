@@ -1,5 +1,6 @@
 """SQLite-skeema ja CRUD-funktiot - agenttien yhteinen rajapinta."""
 
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,10 @@ from core.asetukset import INITIAL_CAPITAL
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DEFAULT_DB_PATH = DATA_DIR / "sijoitusanalysaattori.db"
+# Kirjoita-kerran-arkisto (ks. CLAUDE.md). Sama polku jota
+# agents/trendinmetsastaja.py kayttaa raakavastauksille - yksi totuuden
+# lahde, jotta molemmat kirjoittavat samaan <run_id>-kansioon.
+ARKISTO_DIR = DATA_DIR / "arkisto"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS portfolio (
@@ -410,6 +415,22 @@ def open_position(
         connection.close()
 
 
+def _write_run_metadata(run_id: str, db_path=DEFAULT_DB_PATH) -> None:
+    """Kirjoittaa runs-rivin nykysisällön arkistoon (<run_id>/_ajo.json).
+
+    Ilman tätä arkistokansio jäisi orvoksi jos sen kanta joskus poistetaan -
+    ainoa jäljelle jäävä konteksti olisi silloin pelkkä kansion nimi. Rivi
+    luetaan takaisin kannasta (get_run) sen sijaan että sama sisältö
+    koottaisiin toiseen kertaan täällä - yksi totuuden lähde.
+    """
+    row = get_run(run_id, db_path=db_path)
+    archive_dir = ARKISTO_DIR / run_id
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    file_path = archive_dir / "_ajo.json"
+    with open(file_path, "w", encoding="utf-8") as file_handle:
+        json.dump(row, file_handle, indent=2)
+
+
 def start_run(
     run_id: str,
     run_type: str,
@@ -418,7 +439,10 @@ def start_run(
     git_commit: str | None = None,
     db_path=DEFAULT_DB_PATH,
 ) -> None:
-    """Lisää runs-tauluun rivin tilassa 'kesken' ajon alkaessa."""
+    """Lisää runs-tauluun rivin tilassa 'kesken' ajon alkaessa.
+
+    Kirjoittaa myös arkistoon metatiedoston (ks. _write_run_metadata).
+    """
     connection = open_connection(db_path)
     try:
         connection.execute(
@@ -441,6 +465,8 @@ def start_run(
     finally:
         connection.close()
 
+    _write_run_metadata(run_id, db_path=db_path)
+
 
 def finish_run(
     run_id: str,
@@ -448,7 +474,10 @@ def finish_run(
     error: str | None = None,
     db_path=DEFAULT_DB_PATH,
 ) -> None:
-    """Päivittää runs-rivin lopputilaan ('valmis' tai 'keskeytyi')."""
+    """Päivittää runs-rivin lopputilaan ('valmis' tai 'keskeytyi').
+
+    Päivittää myös arkiston metatiedoston (ks. _write_run_metadata).
+    """
     connection = open_connection(db_path)
     try:
         connection.execute(
@@ -463,6 +492,8 @@ def finish_run(
         connection.commit()
     finally:
         connection.close()
+
+    _write_run_metadata(run_id, db_path=db_path)
 
 
 def get_run(run_id: str, db_path=DEFAULT_DB_PATH) -> dict | None:

@@ -183,6 +183,29 @@ def test_kaynnista_ajo_luo_rivin_tilassa_kesken(db_polku):
     assert "RR_THRESHOLD" in json.loads(rivi["settings_json"])
 
 
+def test_kaynnista_ajo_kirjoittaa_arkistometatiedoston(db_polku):
+    tietokanta.init_database(db_polku)
+    _kaynnista_ajo(db_polku)
+
+    metatiedosto = tietokanta.ARKISTO_DIR / "ajo1" / "_ajo.json"
+    assert metatiedosto.exists()
+    sisalto = json.loads(metatiedosto.read_text(encoding="utf-8"))
+    assert sisalto["run_id"] == "ajo1"
+    assert sisalto["status"] == "kesken"
+
+
+def test_paata_ajo_paivittaa_arkistometatiedoston_statuksen(db_polku):
+    tietokanta.init_database(db_polku)
+    _kaynnista_ajo(db_polku)
+
+    tietokanta.finish_run("ajo1", "valmis", db_path=db_polku)
+
+    metatiedosto = tietokanta.ARKISTO_DIR / "ajo1" / "_ajo.json"
+    sisalto = json.loads(metatiedosto.read_text(encoding="utf-8"))
+    assert sisalto["status"] == "valmis"
+    assert sisalto["finished_at"] is not None
+
+
 def test_paata_ajo_valmiiksi_asettaa_finished_at_ja_tilan(db_polku):
     tietokanta.init_database(db_polku)
     _kaynnista_ajo(db_polku)
