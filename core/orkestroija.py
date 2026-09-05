@@ -38,16 +38,18 @@ def _get_git_commit() -> str | None:
     return result.stdout.strip()
 
 
-def run_normal(db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+def _run_agents(run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     """Alustaa tietokannan ja ajaa kaikki neljä agenttia järjestyksessä.
 
-    Nostaa RuntimeErrorin jos jokin agentti epäonnistuu - loput agentit
-    jäävät silloin ajamatta. Ajo kirjataan aina runs-tauluun: 'kesken'
-    heti alussa, ja lopuksi 'valmis' tai 'keskeytyi' virheteksteineen -
-    poikkeus nousee silti edelleen läpi kirjaamisen jälkeen.
+    Yhteinen run_normal():n ja run_review():n välillä, jottei runs-taulun
+    kirjaus, virheenkäsittely ja agenttisilmukka eriydy kahteen paikkaan ja
+    ala hiljalleen erota toisistaan ensimmäisen muutoksen jälkeen. Nostaa
+    RuntimeErrorin jos jokin agentti epäonnistuu - loput agentit jäävät
+    silloin ajamatta. Ajo kirjataan aina runs-tauluun: 'kesken' heti
+    alussa, ja lopuksi 'valmis' tai 'keskeytyi' virheteksteineen - poikkeus
+    nousee silti edelleen läpi kirjaamisen jälkeen.
     """
     run_id = tietokanta.new_run_id()
-    run_type = "normaali"
 
     tietokanta.init_database(db_path)
     tietokanta.start_run(
@@ -81,9 +83,21 @@ def run_normal(db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     return run_id
 
 
+def run_normal(db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    """Ajaa normaaliajon: etsii uusia ehdokkaita ja pisteyttää/ostaa niitä."""
+    return _run_agents("normaali", db_path=db_path)
+
+
+def run_review(db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    """Ajaa tarkistusajon: pisteyttää avoimet positiot ja päättää pito/myynti."""
+    return _run_agents("tarkistus", db_path=db_path)
+
+
 if __name__ == "__main__":
+    _run_type = sys.argv[1] if len(sys.argv) > 1 else "normaali"
+    _ajo_funktio = run_review if _run_type == "tarkistus" else run_normal
     try:
-        run_normal()
+        _ajo_funktio()
     except RuntimeError as error:
         print(f"VIRHE: {error}")
         sys.exit(1)

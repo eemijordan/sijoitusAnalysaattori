@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS positions (
     buy_run_id TEXT NOT NULL,
     sell_price REAL,
     sell_date TEXT,
+    sell_run_id TEXT,
     pnl_usd REAL,
     pnl_pct REAL,
     last_checked TEXT
@@ -421,6 +422,96 @@ def open_position(
     except Exception:
         connection.rollback()
         raise
+    finally:
+        connection.close()
+
+
+def close_position(
+    symbol: str, sell_price: float, sell_run_id: str, db_path=DEFAULT_DB_PATH
+) -> dict:
+    """Sulkee symbolin aktiivisen position ja kasvattaa käteistä myyntitulolla.
+
+    Peilikuva open_position():lle, yksi yhteys ja yksi transaktio. Käteinen
+    kasvaa myyntitulolla (quantity * sell_price), ei alkuperäisellä panoksella
+    - voitto ja tappio syntyvät juuri tästä erotuksesta. Nostaa ValueErrorin
+    jos sell_price ei ole positiivinen tai symbolilla ei ole aktiivista
+    positiota. Palauttaa suljetun position rivin sanakirjana, jotta kutsuja
+    voi lokittaa toteutuneen tuloksen.
+    """
+    if sell_price <= 0:
+        raise ValueError(f"sell_price on oltava positiivinen, saatiin {sell_price}")
+
+    now = datetime.now().isoformat(timespec="seconds")
+
+    connection = open_connection(db_path)
+    try:
+        row = connection.execute(
+            "SELECT * FROM positions WHERE symbol = ? AND status = 'aktiivinen'",
+            (symbol,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"{symbol}: ei aktiivista positiota suljettavaksi")
+
+        proceeds = row["quantity"] * sell_price
+        pnl_usd = proceeds - row["stake_usd"]
+        pnl_pct = pnl_usd / row["stake_usd"] * 100
+
+        connection.execute(
+            """
+            UPDATE positions
+            SET status = 'suljettu', sell_price = ?, sell_date = ?,
+                sell_run_id = ?, pnl_usd = ?, pnl_pct = ?, last_checked = ?
+            WHERE id = ?
+            """,
+            (sell_price, now, sell_run_id, pnl_usd, pnl_pct, now, row["id"]),
+        )
+
+        cash_row = connection.execute(
+            "SELECT cash FROM portfolio WHERE id = 1"
+        ).fetchone()
+        if cash_row is None:
+            raise RuntimeError("portfolio-taulu on tyhjä - aja init_database() ensin")
+
+        new_balance = cash_row["cash"] + proceeds
+        connection.execute(
+            "UPDATE portfolio SET cash = ?, updated_at = ? WHERE id = 1",
+            (new_balance, now),
+        )
+
+        connection.commit()
+
+        closed = dict(row)
+        closed.update(
+            status="suljettu",
+            sell_price=sell_price,
+            sell_date=now,
+            sell_run_id=sell_run_id,
+            pnl_usd=pnl_usd,
+            pnl_pct=pnl_pct,
+            last_checked=now,
+        )
+        return closed
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def update_last_checked(symbol: str, db_path=DEFAULT_DB_PATH) -> None:
+    """Päivittää aktiivisen position last_checked-aikaleiman nykyhetkeen.
+
+    Käytetään kun positio pidetään - jokainen tarkistettu positio saa
+    aikaleiman riippumatta päätöksestä.
+    """
+    connection = open_connection(db_path)
+    try:
+        connection.execute(
+            "UPDATE positions SET last_checked = ? "
+            "WHERE symbol = ? AND status = 'aktiivinen'",
+            (datetime.now().isoformat(timespec="seconds"), symbol),
+        )
+        connection.commit()
     finally:
         connection.close()
 

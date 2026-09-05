@@ -2,6 +2,7 @@
 
 from core import loki, tietokanta
 from core.asetukset import (
+    EXIT_SCORE_THRESHOLD,
     INITIAL_CAPITAL,
     MAX_POSITIONS,
     MAX_PRICE_DRIFT,
@@ -85,20 +86,135 @@ def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, s
     return "osta", rationale
 
 
+def decide_hold_or_sell(position: dict, score: dict | None) -> tuple[str, str]:
+    """Soveltaa 5 pito/myynti-ehtoa järjestyksessä ja palauttaa (päätös, perustelu).
+
+    Päätös on 'pida' tai 'myy'. Ensimmäinen täyttyvä ehto ratkaisee. Stop ja
+    tavoite tarkistetaan ennen pisteitä - jos kurssi on rikkonut stopin,
+    sillä ei ole väliä miltä pisteet näyttävät, riskiraja on riskiraja.
+    """
+    price = score.get("price") if score else None
+
+    # 1. tuoretta hintaa ei ole - ei koskaan myyda puuttuvan datan
+    # perusteella. Vaiheen 2f verkkovirheet osoittivat etta symboli voi
+    # kadota ajosta ilman etta mikaan on vialla itse positiossa.
+    if score is None:
+        return (
+            "pida",
+            "pisteytysta ei ole talta ajolta, ei myyda puuttuvan datan perusteella",
+        )
+    if price is None or price <= 0:
+        return (
+            "pida",
+            f"hinta puuttuu tai on virheellinen ({price!r}), "
+            f"ei myyda puuttuvan datan perusteella",
+        )
+
+    # 2. stop-loss.
+    stop_loss = position.get("stop_loss")
+    if stop_loss is not None and price <= stop_loss:
+        return "myy", f"stop-loss osui: hinta {price:.2f} <= stop {stop_loss:.2f}"
+
+    # 3. tavoitehinta.
+    target_price = position.get("target_price")
+    if target_price is not None and price >= target_price:
+        return (
+            "myy",
+            f"tavoite saavutettu: hinta {price:.2f} >= tavoite {target_price:.2f}",
+        )
+
+    # 4. pisteet pudonneet exit-kynnyksen alle (hystereesi, ks. asetukset.py).
+    rr = score.get("risk_reward_score")
+    if rr is not None and rr < EXIT_SCORE_THRESHOLD:
+        return "myy", f"pisteet {rr} < EXIT_SCORE_THRESHOLD {EXIT_SCORE_THRESHOLD}"
+
+    return (
+        "pida",
+        f"pisteet {rr} >= EXIT_SCORE_THRESHOLD {EXIT_SCORE_THRESHOLD}, "
+        f"stop ja tavoite eivat osuneet",
+    )
+
+
 def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    """Ajaa osto- tai tarkistuslogiikan run_type:n mukaan."""
+    if run_type == "tarkistus":
+        return _run_review(run_id, run_type, db_path)
+    return _run_normal(run_id, run_type, db_path)
+
+
+def _run_review(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    """Tarkistaa jokaisen avoimen position stopin, tavoitteen ja pisteet.
+
+    Jokaisesta positiosta syntyy tasan yksi päätösrivi ('pida' tai 'myy')
+    riippumatta siitä löytyykö sille tuoretta pisteytystä tältä ajolta.
+    Päätös kirjataan aina ensin, ennen kuin positions- tai portfolio-taulua
+    kosketaan (sääntö "ei sijoituspäätöstä ilman lokia").
+
+    **Tunnettu rajoitus:** stop ja tavoite tarkistetaan vain päätöskurssia
+    vastaan (technical_scores.price on Agentti 2:n viimeisimmän palkin
+    päätöskurssi, ei sen päivän ylin/alin). Jos osake romahtaa stopin läpi
+    kesken viikon ja toipuu tarkistuspäivään mennessä, tämä ajo näkee vain
+    lievästi tappiollisen päätöskurssin ja päättää pitää - tappioita
+    aliarvioidaan järjestelmällisesti. Korjauspolku (tallentaa jakson ylin/
+    alin Agentti 2:ssa) on tiedossa mutta kuuluu omaan vaiheeseensa.
+    """
+    positions = tietokanta.get_open_positions(db_path=db_path)
+    if not positions:
+        summary = "0 aktiivista positiota, 0 paatosta"
+        _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
+        return summary
+
+    scores_by_symbol = {
+        score["symbol"]: score
+        for score in tietokanta.get_scores(run_id, db_path=db_path)
+    }
+
+    sold = 0
+    held = 0
+    total_pnl = 0.0
+
+    for position in positions:
+        symbol = position["symbol"]
+        score = scores_by_symbol.get(symbol)
+        decision, rationale = decide_hold_or_sell(position, score)
+
+        tietokanta.insert_decision(
+            run_id=run_id,
+            run_type=run_type,
+            symbol=symbol,
+            decision=decision,
+            rationale=rationale,
+            db_path=db_path,
+        )
+
+        if decision == "myy":
+            closed = tietokanta.close_position(
+                symbol=symbol,
+                sell_price=score["price"],
+                sell_run_id=run_id,
+                db_path=db_path,
+            )
+            total_pnl += closed["pnl_usd"]
+            sold += 1
+        else:
+            tietokanta.update_last_checked(symbol, db_path=db_path)
+            held += 1
+
+    summary = f"{len(positions)} positiota tarkistettu, {sold} myytya, {held} pidettya"
+    _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
+    if sold:
+        _loki.info(
+            f"Ajo {run_id}: myytyjen yhteenlaskettu voitto/tappio {total_pnl:.2f} USD"
+        )
+    return summary
+
+
+def _run_normal(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     """Pisteyttää ajon kandidaatit, tarkistaa salkun stop-tason ja tekee ostot.
 
     Käsittelee pisteytykset RR-järjestyksessä parhaasta huonoimpaan. Jokaisesta
     pisteytyksestä syntyy tasan yksi päätösrivi riippumatta lopputuloksesta.
     """
-    if run_type != "normaali":
-        message = (
-            f"ajotyyppi '{run_type}': pito/myynti-logiikkaa ei ole viela toteutettu "
-            f"(vaihe 3b)"
-        )
-        _loki.info(message)
-        return message
-
     scores = tietokanta.get_scores(run_id, db_path=db_path)
     if not scores:
         summary = "0 pisteytysta, 0 paatosta"

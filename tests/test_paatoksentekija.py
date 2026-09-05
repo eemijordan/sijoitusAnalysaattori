@@ -4,7 +4,12 @@ import pytest
 
 from agents import paatoksentekija
 from core import tietokanta
-from core.asetukset import MAX_POSITIONS, POSITION_SIZE, RR_THRESHOLD
+from core.asetukset import (
+    EXIT_SCORE_THRESHOLD,
+    MAX_POSITIONS,
+    POSITION_SIZE,
+    RR_THRESHOLD,
+)
 
 
 def _score(symbol="AAPL", risk_reward_score=8.0, price=100.0):
@@ -25,6 +30,10 @@ def _state(active_count=0, cash=10000.0, active_symbols=None):
         "cash": cash,
         "active_symbols": active_symbols or set(),
     }
+
+
+def _position(symbol="AAPL", stop_loss=None, target_price=None):
+    return {"symbol": symbol, "stop_loss": stop_loss, "target_price": target_price}
 
 
 # --- decide_buy(): puhdas logiikka, ei tietokantaa eika verkkoa ---
@@ -137,6 +146,111 @@ def test_rr_tarkistetaan_ennen_kapasiteettia():
     assert decision == "hylatty"
     assert "RR_THRESHOLD" in rationale
     assert "MAX_POSITIONS" not in rationale
+
+
+# --- decide_hold_or_sell(): puhdas logiikka, ei tietokantaa eika verkkoa ---
+
+
+def test_hinta_stopin_alla_myy():
+    position = _position(stop_loss=100.0)
+    score = _score(price=95.0, risk_reward_score=10.0)
+
+    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "myy"
+    assert "stop" in rationale.lower()
+
+
+def test_hinta_tavoitteessa_tai_yli_myy():
+    position = _position(target_price=120.0)
+    score = _score(price=120.0, risk_reward_score=10.0)
+
+    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "myy"
+    assert "tavoite" in rationale.lower()
+
+
+def test_pisteet_alle_exit_kynnyksen_myy():
+    position = _position()
+    score = _score(price=100.0, risk_reward_score=EXIT_SCORE_THRESHOLD - 1)
+
+    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "myy"
+    assert "EXIT_SCORE_THRESHOLD" in rationale
+
+
+def test_pisteet_hystereesikaistalla_pitaa():
+    # Todistaa hystereesin: RR_THRESHOLD=7 (ostoraja) ja EXIT_SCORE_THRESHOLD=5
+    # (myyntiraja) ovat eri lukuja tarkoituksella. Pisteet 6 ovat kaistan
+    # sisalla - jos osto- ja myyntiraja olisivat sama luku, tama osake
+    # ostettaisiin ja myytaisiin vuorotellen joka tarkistuksessa.
+    position = _position()
+    score = _score(price=100.0, risk_reward_score=6.0)
+
+    decision, _ = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "pida"
+
+
+def test_pisteet_yli_rr_kynnyksen_pitaa():
+    position = _position()
+    score = _score(price=100.0, risk_reward_score=RR_THRESHOLD + 1)
+
+    decision, _ = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "pida"
+
+
+def test_score_none_pitaa():
+    position = _position()
+
+    decision, rationale = paatoksentekija.decide_hold_or_sell(position, None)
+
+    assert decision == "pida"
+    assert "puuttu" in rationale
+
+
+def test_hinta_puuttuu_pisteytyksesta_pitaa():
+    position = _position()
+    score = _score(price=None)
+
+    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "pida"
+    assert "puuttu" in rationale
+
+
+def test_stop_puuttuu_tavoite_osuu_myy():
+    position = _position(stop_loss=None, target_price=120.0)
+    score = _score(price=125.0, risk_reward_score=10.0)
+
+    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "myy"
+    assert "tavoite" in rationale.lower()
+
+
+def test_stop_ja_tavoite_puuttuvat_pisteet_hyvat_pitaa():
+    position = _position(stop_loss=None, target_price=None)
+    score = _score(price=100.0, risk_reward_score=10.0)
+
+    decision, _ = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "pida"
+
+
+def test_stop_voittaa_hyvat_pisteet():
+    # Stop tarkistetaan ennen pisteita: jos kurssi on rikkonut stopin, silla
+    # ei ole valia miltä pisteet nayttavat - riskiraja on riskiraja.
+    position = _position(stop_loss=100.0)
+    score = _score(price=95.0, risk_reward_score=10.0)
+
+    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "myy"
+    assert "stop" in rationale.lower()
 
 
 # --- run(): tietokannan kanssa, lahtodata kirjoitettu suoraan kantaan ---
@@ -304,23 +418,92 @@ def test_aja_nolla_pisteytysta_palauttaa_siististi(tmp_path):
     assert tietokanta.get_decisions("ajo_tyhja", db_path=polku) == []
 
 
-def test_aja_tarkistus_ei_tee_paatoksia(tmp_path):
+def test_aja_tarkistus_myy_stopin_rikkoneen_ja_pitaa_toisen(tmp_path):
     polku = tmp_path / "testi.db"
     tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="BAD",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        stop_loss=95.0,
+        target_price=130.0,
+        db_path=polku,
+    )
+    tietokanta.open_position(
+        symbol="GOOD",
+        buy_price=50.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        stop_loss=45.0,
+        target_price=70.0,
+        db_path=polku,
+    )
 
     tietokanta.insert_score(
         run_id="ajo1",
         run_type="tarkistus",
-        symbol="AAPL",
-        risk_reward_score=9.0,
-        price=100.0,
+        symbol="BAD",
+        risk_reward_score=8.0,
+        price=90.0,  # alle stopin (95)
+        db_path=polku,
+    )
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="tarkistus",
+        symbol="GOOD",
+        risk_reward_score=8.0,
+        price=55.0,  # stopin ja tavoitteen valissa, pisteet hyvat
         db_path=polku,
     )
 
     tulos = paatoksentekija.run("ajo1", "tarkistus", db_path=polku)
 
-    assert tietokanta.get_decisions("ajo1", db_path=polku) == []
-    assert "vaihe 3b" in tulos
+    decisions = tietokanta.get_decisions("ajo1", db_path=polku)
+    assert len(decisions) == 2
+
+    paatokset = {d["symbol"]: d["decision"] for d in decisions}
+    assert paatokset["BAD"] == "myy"
+    assert paatokset["GOOD"] == "pida"
+
+    assert tietokanta.has_open_position("BAD", db_path=polku) is False
+    assert tietokanta.has_open_position("GOOD", db_path=polku) is True
+    assert "1 myytya" in tulos
+
+
+def test_aja_tarkistus_nolla_positiota_palauttaa_siististi(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tulos = paatoksentekija.run("ajo_tyhja", "tarkistus", db_path=polku)
+
+    assert "0 aktiivista positiota" in tulos
+    assert tietokanta.get_decisions("ajo_tyhja", db_path=polku) == []
+
+
+def test_aja_tarkistus_positio_ilman_pisteytysta_pidetaan(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        stop_loss=90.0,
+        target_price=130.0,
+        db_path=polku,
+    )
+    # ei pisteytysta talle ajolle (esim. vaiheen 2f verkkovirhe)
+
+    tulos = paatoksentekija.run("ajo1", "tarkistus", db_path=polku)
+
+    decisions = tietokanta.get_decisions("ajo1", db_path=polku)
+    assert len(decisions) == 1
+    assert decisions[0]["decision"] == "pida"
+    assert tietokanta.has_open_position("AAPL", db_path=polku) is True
+    assert "1 pidettya" in tulos
 
 
 def test_aja_jokaisesta_pisteytyksesta_syntyy_tasan_yksi_paatos(tmp_path):
@@ -502,3 +685,143 @@ def test_avaa_positio_kaksoisosto_nostaa_integrityerrorin(tmp_path):
         )
 
     assert tietokanta.get_cash(db_path=polku) == kateinen_ekan_jalkeen
+
+
+# --- tietokanta.close_position() ---
+
+
+def test_sulje_positio_voitollinen_kasvattaa_kateista_myyntitulolla(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo1",
+        db_path=polku,
+    )
+    kateinen_oston_jalkeen = tietokanta.get_cash(db_path=polku)
+
+    suljettu = tietokanta.close_position(
+        symbol="AAPL", sell_price=120.0, sell_run_id="ajo2", db_path=polku
+    )
+
+    assert suljettu["pnl_usd"] == 200.0
+    assert suljettu["pnl_pct"] == 20.0
+    # kateinen kasvaa myyntitulolla (quantity * sell_price = 10 * 120 = 1200),
+    # ei alkuperaisella panoksella (1000) - tama on koko funktion helpoin
+    # kohta mennä pieleen.
+    assert tietokanta.get_cash(db_path=polku) == kateinen_oston_jalkeen + 1200.0
+
+
+def test_sulje_positio_tappiollinen_kasvattaa_kateista_myyntitulolla(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo1",
+        db_path=polku,
+    )
+    kateinen_oston_jalkeen = tietokanta.get_cash(db_path=polku)
+
+    suljettu = tietokanta.close_position(
+        symbol="AAPL", sell_price=80.0, sell_run_id="ajo2", db_path=polku
+    )
+
+    assert suljettu["pnl_usd"] == -200.0
+    assert suljettu["pnl_pct"] == -20.0
+    assert tietokanta.get_cash(db_path=polku) == kateinen_oston_jalkeen + 800.0
+
+
+def test_sulje_positio_taydentaa_kentat(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo1",
+        db_path=polku,
+    )
+
+    tietokanta.close_position(
+        symbol="AAPL", sell_price=110.0, sell_run_id="ajo2", db_path=polku
+    )
+
+    yhteys = tietokanta.open_connection(polku)
+    try:
+        rivi = yhteys.execute(
+            "SELECT * FROM positions WHERE symbol = 'AAPL'"
+        ).fetchone()
+    finally:
+        yhteys.close()
+
+    assert rivi["status"] == "suljettu"
+    assert rivi["sell_price"] == 110.0
+    assert rivi["sell_date"] is not None
+    assert rivi["sell_run_id"] == "ajo2"
+    assert rivi["last_checked"] is not None
+
+
+def test_sulje_positio_ilman_aktiivista_positiota_nostaa_valueerrorin(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    with pytest.raises(ValueError):
+        tietokanta.close_position(
+            symbol="AAPL", sell_price=100.0, sell_run_id="ajo1", db_path=polku
+        )
+
+
+def test_sulje_positio_ei_positiivinen_myyntihinta_nostaa_valueerrorin(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo1",
+        db_path=polku,
+    )
+    kateinen_ennen = tietokanta.get_cash(db_path=polku)
+
+    with pytest.raises(ValueError):
+        tietokanta.close_position(
+            symbol="AAPL", sell_price=0.0, sell_run_id="ajo2", db_path=polku
+        )
+
+    assert tietokanta.get_cash(db_path=polku) == kateinen_ennen
+    assert tietokanta.has_open_position("AAPL", db_path=polku) is True
+
+
+def test_sulkemisen_jalkeen_symboli_voidaan_ostaa_uudelleen(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo1",
+        db_path=polku,
+    )
+    tietokanta.close_position(
+        symbol="AAPL", sell_price=110.0, sell_run_id="ajo2", db_path=polku
+    )
+
+    uusi_id = tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=90.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo3",
+        db_path=polku,
+    )
+
+    assert uusi_id > 0
+    assert tietokanta.has_open_position("AAPL", db_path=polku) is True

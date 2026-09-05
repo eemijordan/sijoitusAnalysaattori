@@ -53,6 +53,12 @@ PORTFOLIO_STOP_LEVEL = 0.80  # osuus INITIAL_CAPITAL:sta
 # tavallisen päivittäisheilunnan takia, suurempi tekisi tappioista tarpeettoman
 # isoja.
 STOP_ATR_MULTIPLIER = 2.0
+# Hystereesi, ei sattumanvarainen luku: ostetaan kun pisteet >= RR_THRESHOLD
+# (7), myydään vasta kun ne putoavat alle EXIT_SCORE_THRESHOLD:in (5). Väliin
+# jäävä kaista 5-7 on tarkoituksellinen - jos osto- ja myyntiraja olisivat
+# sama luku, seitsemän pisteen tuntumassa värähtelevä osake ostettaisiin ja
+# myytäisiin vuorotellen joka tarkistuksessa. Kaista poistaa sen kokonaan.
+EXIT_SCORE_THRESHOLD = 5
 
 
 def _get_api_key(env_var: str) -> str:

@@ -112,6 +112,18 @@ def test_kaatuva_agentti_jattaa_ajon_keskeytyi_tilaan_ja_virhetekstin(
     assert "simuloitu agenttivirhe" in rivi["error"]
 
 
+def test_run_review_paattyy_valmis_tilaan_run_type_tarkistus(tmp_path):
+    polku = tmp_path / "testi.db"
+
+    # Ei avoimia positioita eika ehdokkaita -> jokainen agentti palaa
+    # siististi ilman verkkokutsuja (ei tarvetta monkeypatchata mitaan).
+    ajo_id = orkestroija.run_review(polku)
+
+    rivi = tietokanta.get_run(ajo_id, db_path=polku)
+    assert rivi["status"] == "valmis"
+    assert rivi["run_type"] == "tarkistus"
+
+
 def test_git_komennon_epaonnistuessa_get_git_commit_palauttaa_none(monkeypatch):
     def _epaonnistu(*args, **kwargs):
         raise FileNotFoundError("git ei loydy")
