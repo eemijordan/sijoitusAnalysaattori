@@ -1,12 +1,18 @@
 """Sijoitusvakiot ja API-avainten haku ympäristömuuttujista."""
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
+
+# Nostetaan aina kun pistemalli tai siihen vaikuttava vakio muuttuu (ks.
+# CLAUDE.md) - ihmisluettava merkintä. Varsinainen totuus ajon toistamiseksi
+# on git-commit (ks. core/orkestroija.py), koska se ei voi unohtua.
+MODEL_VERSION = "1.0"
 
 # Sijoitusvakiot (ks. CLAUDE.md)
 INITIAL_CAPITAL = 10000  # USD
@@ -62,3 +68,22 @@ def get_twelve_data_key() -> str:
 def get_fmp_key() -> str:
     """Palauttaa FMP-API-avaimen ympäristömuuttujasta."""
     return _get_api_key("FMP_API_KEY")
+
+
+def snapshot_settings() -> dict:
+    """Palauttaa kaikki moduulin vakiot sanakirjana ajon kirjaamista varten.
+
+    Heijastuksella koko moduulin nimiavaruuden yli, ei käsin ylläpidettävästä
+    listasta - muuten lista jäisi jälkeen heti kun seuraava vakio lisätään.
+    Mukaan otetaan nimet jotka ovat kokonaan isoilla kirjaimilla ja joiden
+    arvo on int, float, str tai bool; funktiot, moduulit ja alaviivalla
+    alkavat nimet jäävät automaattisesti pois tyyppitarkistuksen kautta.
+    """
+    module = sys.modules[__name__]
+    return {
+        name: value
+        for name, value in vars(module).items()
+        if not name.startswith("_")
+        and name.isupper()
+        and isinstance(value, (int, float, str, bool))
+    }

@@ -77,6 +77,18 @@ CREATE TABLE IF NOT EXISTS positions (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_open_symbol
 ON positions(symbol) WHERE status = 'aktiivinen';
+
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    run_type TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    status TEXT NOT NULL CHECK (status IN ('kesken', 'valmis', 'keskeytyi')),
+    error TEXT,
+    settings_json TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    git_commit TEXT
+);
 """
 
 
@@ -394,6 +406,73 @@ def open_position(
     except Exception:
         connection.rollback()
         raise
+    finally:
+        connection.close()
+
+
+def start_run(
+    run_id: str,
+    run_type: str,
+    settings_json: str,
+    model_version: str,
+    git_commit: str | None = None,
+    db_path=DEFAULT_DB_PATH,
+) -> None:
+    """Lisää runs-tauluun rivin tilassa 'kesken' ajon alkaessa."""
+    connection = open_connection(db_path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO runs (
+                run_id, run_type, started_at, status, settings_json,
+                model_version, git_commit
+            ) VALUES (?, ?, ?, 'kesken', ?, ?, ?)
+            """,
+            (
+                run_id,
+                run_type,
+                datetime.now().isoformat(timespec="seconds"),
+                settings_json,
+                model_version,
+                git_commit,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def finish_run(
+    run_id: str,
+    status: str,
+    error: str | None = None,
+    db_path=DEFAULT_DB_PATH,
+) -> None:
+    """Päivittää runs-rivin lopputilaan ('valmis' tai 'keskeytyi')."""
+    connection = open_connection(db_path)
+    try:
+        connection.execute(
+            "UPDATE runs SET finished_at = ?, status = ?, error = ? WHERE run_id = ?",
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                status,
+                error,
+                run_id,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def get_run(run_id: str, db_path=DEFAULT_DB_PATH) -> dict | None:
+    """Palauttaa yhden runs-rivin, tai None jos run_id:tä ei löydy."""
+    connection = open_connection(db_path)
+    try:
+        row = connection.execute(
+            "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
     finally:
         connection.close()
 

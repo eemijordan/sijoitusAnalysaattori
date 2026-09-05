@@ -24,6 +24,9 @@ TIMEOUT = 10
 FMP_BASE = "https://financialmodelingprep.com/stable"
 TWELVE_DATA_STOCKS_URL = "https://api.twelvedata.com/stocks"
 VALIMUISTI_DIR = tietokanta.DATA_DIR / "valimuisti"
+# Kirjoita-kerran-arkisto (ks. CLAUDE.md) - toisin kuin valimuisti, tata ei
+# koskaan siivota eika luetakaan taalta, vain kirjoitetaan.
+ARKISTO_DIR = tietokanta.DATA_DIR / "arkisto"
 
 PAGE_SIZE = 10
 # Talla FMP-tasolla vain page=0 on sallittu (katto on tilikohtainen, todettu
@@ -80,14 +83,37 @@ RATING_ORDER = {
 }
 
 
-def _fetch_json_cached(name: str, url: str, params: dict):
-    """Hakee JSON:in päivän mittaisella tiedostovälimuistilla."""
+def _archive_response(run_id: str | None, name: str, data) -> None:
+    """Kirjoittaa raa'an vastauksen data/arkisto/<run_id>/<name>.json:iin.
+
+    Ohitetaan jos run_id on None (esim. tools/api_koetin.py tai testit,
+    joilla ei ole ajoa jonka alle arkistoida). Arkistoa ei koskaan lueta
+    täältä - se on kirjoitusta varten, välimuisti hoitaa lukemisen.
+    """
+    if run_id is None:
+        return
+    archive_dir = ARKISTO_DIR / run_id
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    file_path = archive_dir / f"{name}.json"
+    with open(file_path, "w", encoding="utf-8") as file_handle:
+        json.dump(data, file_handle)
+
+
+def _fetch_json_cached(name: str, url: str, params: dict, run_id: str | None = None):
+    """Hakee JSON:in päivän mittaisella tiedostovälimuistilla.
+
+    Kirjoittaa lisäksi raa'an vastauksen arkistoon (ks. _archive_response)
+    jos run_id on annettu - myös silloin kun välimuisti palvelee kutsun,
+    koska kahden saman päivän ajon pitää saada omat arkistokopionsa.
+    """
     VALIMUISTI_DIR.mkdir(parents=True, exist_ok=True)
     file_path = VALIMUISTI_DIR / f"{name}_{date.today().isoformat()}.json"
 
     if file_path.exists():
         with open(file_path, encoding="utf-8") as file_handle:
-            return json.load(file_handle)
+            data = json.load(file_handle)
+        _archive_response(run_id, name, data)
+        return data
 
     response = requests.get(url, params=params, timeout=TIMEOUT)
     response.raise_for_status()
@@ -96,10 +122,13 @@ def _fetch_json_cached(name: str, url: str, params: dict):
     with open(file_path, "w", encoding="utf-8") as file_handle:
         json.dump(data, file_handle)
 
+    _archive_response(run_id, name, data)
     return data
 
 
-def _fetch_paginated(name: str, url: str, apikey: str) -> list[dict]:
+def _fetch_paginated(
+    name: str, url: str, apikey: str, run_id: str | None = None
+) -> list[dict]:
     """Hakee sivutetun FMP-päätepisteen, pysähtyen tyhjään tai toistuvaan sivuun."""
     all_rows: list[dict] = []
     first_page = None
@@ -110,6 +139,7 @@ def _fetch_paginated(name: str, url: str, apikey: str) -> list[dict]:
                 f"{name}_sivu{page}",
                 url,
                 {"page": page, "limit": PAGE_SIZE, "apikey": apikey},
+                run_id=run_id,
             )
         except requests.RequestException:
             if page == 0:
@@ -147,35 +177,45 @@ def _fetch_paginated(name: str, url: str, apikey: str) -> list[dict]:
     return all_rows
 
 
-def fetch_analyst_changes() -> list[dict]:
+def fetch_analyst_changes(run_id: str | None = None) -> list[dict]:
     """Hakee FMP:n tuoreimmat analyytikkoluokitusmuutokset."""
     apikey = get_fmp_key()
     return _fetch_paginated(
-        "grades-latest-news", f"{FMP_BASE}/grades-latest-news", apikey
+        "grades-latest-news", f"{FMP_BASE}/grades-latest-news", apikey, run_id=run_id
     )
 
 
-def fetch_congress_trades() -> list[dict]:
+def fetch_congress_trades(run_id: str | None = None) -> list[dict]:
     """Hakee FMP:n tuoreimmat senaatin ja edustajainhuoneen kaupat."""
     apikey = get_fmp_key()
-    senate = _fetch_paginated("senate-latest", f"{FMP_BASE}/senate-latest", apikey)
-    house = _fetch_paginated("house-latest", f"{FMP_BASE}/house-latest", apikey)
+    senate = _fetch_paginated(
+        "senate-latest", f"{FMP_BASE}/senate-latest", apikey, run_id=run_id
+    )
+    house = _fetch_paginated(
+        "house-latest", f"{FMP_BASE}/house-latest", apikey, run_id=run_id
+    )
     return senate + house
 
 
-def fetch_insider_trades() -> list[dict]:
+def fetch_insider_trades(run_id: str | None = None) -> list[dict]:
     """Hakee FMP:n tuoreimmat sisäpiirikaupat."""
     apikey = get_fmp_key()
     return _fetch_paginated(
-        "insider-trading-latest", f"{FMP_BASE}/insider-trading/latest", apikey
+        "insider-trading-latest",
+        f"{FMP_BASE}/insider-trading/latest",
+        apikey,
+        run_id=run_id,
     )
 
 
-def fetch_price_targets() -> list[dict]:
+def fetch_price_targets(run_id: str | None = None) -> list[dict]:
     """Hakee FMP:n tuoreimmat analyytikkojen tavoitehinnat."""
     apikey = get_fmp_key()
     return _fetch_paginated(
-        "price-target-latest-news", f"{FMP_BASE}/price-target-latest-news", apikey
+        "price-target-latest-news",
+        f"{FMP_BASE}/price-target-latest-news",
+        apikey,
+        run_id=run_id,
     )
 
 
@@ -826,25 +866,25 @@ def _run_normal(run_id: str, run_type: str, db_path) -> str:
     failed = []
 
     try:
-        analyst_rows = fetch_analyst_changes()
+        analyst_rows = fetch_analyst_changes(run_id)
     except Exception as error:
         _loki.warning(f"Analyytikkodatan haku epaonnistui: {error}")
         failed.append("analyytikko")
 
     try:
-        congress_rows = fetch_congress_trades()
+        congress_rows = fetch_congress_trades(run_id)
     except Exception as error:
         _loki.warning(f"Kongressidatan haku epaonnistui: {error}")
         failed.append("kongressi")
 
     try:
-        insider_rows = fetch_insider_trades()
+        insider_rows = fetch_insider_trades(run_id)
     except Exception as error:
         _loki.warning(f"Sisapiiridatan haku epaonnistui: {error}")
         failed.append("sisapiiri")
 
     try:
-        price_target_rows = fetch_price_targets()
+        price_target_rows = fetch_price_targets(run_id)
     except Exception as error:
         _loki.warning(f"Tavoitehintadatan haku epaonnistui: {error}")
         failed.append("tavoitehinta")

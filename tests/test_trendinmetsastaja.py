@@ -767,10 +767,18 @@ def test_aja_normaali_yli_valittavat_maaran(tmp_path, monkeypatch):
         _analyytikkorivi(s, paivia_sitten=i) for i, s in enumerate(SYMBOLIT_12)
     ]
 
-    monkeypatch.setattr(trendinmetsastaja, "fetch_analyst_changes", lambda: analyytikko)
-    monkeypatch.setattr(trendinmetsastaja, "fetch_congress_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_insider_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_price_targets", lambda: [])
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_analyst_changes", lambda run_id=None: analyytikko
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_congress_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_insider_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_price_targets", lambda run_id=None: []
+    )
     monkeypatch.setattr(trendinmetsastaja, "fetch_us_symbols", lambda: set(SYMBOLIT_12))
 
     trendinmetsastaja.run("ajo1", "normaali", db_path=polku)
@@ -794,10 +802,18 @@ def test_aja_normaali_alle_valittavat_maaran(tmp_path, monkeypatch):
     symbolit = ["AAAA", "BBBB", "CCCC"]
     analyytikko = [_analyytikkorivi(s) for s in symbolit]
 
-    monkeypatch.setattr(trendinmetsastaja, "fetch_analyst_changes", lambda: analyytikko)
-    monkeypatch.setattr(trendinmetsastaja, "fetch_congress_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_insider_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_price_targets", lambda: [])
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_analyst_changes", lambda run_id=None: analyytikko
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_congress_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_insider_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_price_targets", lambda run_id=None: []
+    )
     monkeypatch.setattr(trendinmetsastaja, "fetch_us_symbols", lambda: set(symbolit))
 
     trendinmetsastaja.run("ajo2", "normaali", db_path=polku)
@@ -815,10 +831,18 @@ def test_kynnyksen_alle_jaava_ehdokas_tallentuu_mutta_ei_jatkoon(tmp_path, monke
         _analyytikkorivi("AAAA", uusi="Hold", edellinen="Hold", action="hold")
     ]  # 1 piste
 
-    monkeypatch.setattr(trendinmetsastaja, "fetch_analyst_changes", lambda: matala)
-    monkeypatch.setattr(trendinmetsastaja, "fetch_congress_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_insider_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_price_targets", lambda: [])
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_analyst_changes", lambda run_id=None: matala
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_congress_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_insider_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_price_targets", lambda run_id=None: []
+    )
     monkeypatch.setattr(trendinmetsastaja, "fetch_us_symbols", lambda: {"AAAA"})
 
     trendinmetsastaja.run("ajoK", "normaali", db_path=polku)
@@ -834,10 +858,18 @@ def test_pisteet_tallentuvat_tietokantaan(tmp_path, monkeypatch):
 
     analyytikko = [_analyytikkorivi("AAPL")]  # upgrade(3) + Buy(2) = 5 pistetta
 
-    monkeypatch.setattr(trendinmetsastaja, "fetch_analyst_changes", lambda: analyytikko)
-    monkeypatch.setattr(trendinmetsastaja, "fetch_congress_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_insider_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_price_targets", lambda: [])
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_analyst_changes", lambda run_id=None: analyytikko
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_congress_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_insider_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_price_targets", lambda run_id=None: []
+    )
     monkeypatch.setattr(trendinmetsastaja, "fetch_us_symbols", lambda: {"AAPL"})
 
     trendinmetsastaja.run("ajoP", "normaali", db_path=polku)
@@ -854,11 +886,17 @@ def test_aja_normaali_keskeytyy_jos_us_symbolit_haku_epaonnistuu(tmp_path, monke
     monkeypatch.setattr(
         trendinmetsastaja,
         "fetch_analyst_changes",
-        lambda: [_analyytikkorivi("AAPL")],
+        lambda run_id=None: [_analyytikkorivi("AAPL")],
     )
-    monkeypatch.setattr(trendinmetsastaja, "fetch_congress_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_insider_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_price_targets", lambda: [])
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_congress_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_insider_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_price_targets", lambda run_id=None: []
+    )
 
     def _epaonnistu():
         raise RuntimeError("Twelve Data /stocks ei vastaa")
@@ -952,6 +990,92 @@ def test_symbolilista_haku_epaonnistuu_eika_valimuistia_ole_keskeytyy(
 
     with pytest.raises(RuntimeError):
         trendinmetsastaja.fetch_us_symbols()
+
+
+# --- _fetch_json_cached(): raakadatan arkisto (data/arkisto/<run_id>/<name>.json) ---
+
+
+def _valmistele_arkistotestit(tmp_path, monkeypatch):
+    valimuisti_dir = tmp_path / "valimuisti"
+    arkisto_dir = tmp_path / "arkisto"
+    monkeypatch.setattr(trendinmetsastaja, "VALIMUISTI_DIR", valimuisti_dir)
+    monkeypatch.setattr(trendinmetsastaja, "ARKISTO_DIR", arkisto_dir)
+    return valimuisti_dir, arkisto_dir
+
+
+def test_haku_kirjoittaa_arkistokopion_raa_alla_vastauksella(tmp_path, monkeypatch):
+    _, arkisto_dir = _valmistele_arkistotestit(tmp_path, monkeypatch)
+
+    kutsut = []
+
+    def _fake_get(url, params=None, timeout=None):
+        kutsut.append(1)
+
+        class _Vastaus:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": "raaka"}
+
+        return _Vastaus()
+
+    monkeypatch.setattr(trendinmetsastaja.requests, "get", _fake_get)
+
+    data = trendinmetsastaja._fetch_json_cached(
+        "testinimi", "https://esimerkki", {}, run_id="ajo1"
+    )
+
+    assert data == {"data": "raaka"}
+    arkistotiedosto = arkisto_dir / "ajo1" / "testinimi.json"
+    assert arkistotiedosto.exists()
+    assert json.loads(arkistotiedosto.read_text(encoding="utf-8")) == {"data": "raaka"}
+
+
+def test_valimuistiosuma_kirjoittaa_silti_arkistokopion(tmp_path, monkeypatch):
+    valimuisti_dir, arkisto_dir = _valmistele_arkistotestit(tmp_path, monkeypatch)
+    valimuisti_dir.mkdir(parents=True, exist_ok=True)
+    valimuistitiedosto = valimuisti_dir / f"testinimi_{date.today().isoformat()}.json"
+    valimuistitiedosto.write_text(
+        json.dumps({"data": "valimuistista"}), encoding="utf-8"
+    )
+
+    def _ei_saa_kutsua(*args, **kwargs):
+        raise AssertionError("verkkokutsua ei saa tehda valimuistiosumalla")
+
+    monkeypatch.setattr(trendinmetsastaja.requests, "get", _ei_saa_kutsua)
+
+    data = trendinmetsastaja._fetch_json_cached(
+        "testinimi", "https://esimerkki", {}, run_id="ajo2"
+    )
+
+    assert data == {"data": "valimuistista"}
+    arkistotiedosto = arkisto_dir / "ajo2" / "testinimi.json"
+    assert arkistotiedosto.exists()
+    assert json.loads(arkistotiedosto.read_text(encoding="utf-8")) == {
+        "data": "valimuistista"
+    }
+
+
+def test_run_id_none_ei_kirjoita_arkistoon(tmp_path, monkeypatch):
+    _, arkisto_dir = _valmistele_arkistotestit(tmp_path, monkeypatch)
+
+    def _fake_get(url, params=None, timeout=None):
+        class _Vastaus:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": "raaka"}
+
+        return _Vastaus()
+
+    monkeypatch.setattr(trendinmetsastaja.requests, "get", _fake_get)
+
+    data = trendinmetsastaja._fetch_json_cached("testinimi", "https://esimerkki", {})
+
+    assert data == {"data": "raaka"}
+    assert not arkisto_dir.exists()
 
 
 def test_symbolilista_40_vrk_vanhaa_ei_kayteta_varajarjestelmana(tmp_path, monkeypatch):

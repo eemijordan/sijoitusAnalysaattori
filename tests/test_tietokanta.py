@@ -1,9 +1,10 @@
+import json
 import sqlite3
 
 import pytest
 
 from core import tietokanta
-from core.asetukset import INITIAL_CAPITAL
+from core.asetukset import INITIAL_CAPITAL, RR_THRESHOLD
 
 ODOTETUT_TAULUT = {
     "portfolio",
@@ -11,6 +12,7 @@ ODOTETUT_TAULUT = {
     "technical_scores",
     "decisions",
     "positions",
+    "runs",
 }
 
 
@@ -156,3 +158,58 @@ def test_ehdokkaan_pisteet_tallentuvat_ja_luetaan_takaisin(db_polku):
     rivit = tietokanta.get_candidates("ajo1", advanced_only=False, db_path=db_polku)
     assert len(rivit) == 1
     assert rivit[0]["score"] == 7.5
+
+
+# --- runs: ajojen versiointi ---
+
+
+def _kaynnista_ajo(db_polku, run_id="ajo1"):
+    tietokanta.start_run(
+        run_id=run_id,
+        run_type="normaali",
+        settings_json=json.dumps({"RR_THRESHOLD": RR_THRESHOLD}),
+        model_version="1.0",
+        git_commit="deadbeef",
+        db_path=db_polku,
+    )
+
+
+def test_kaynnista_ajo_luo_rivin_tilassa_kesken(db_polku):
+    tietokanta.init_database(db_polku)
+    _kaynnista_ajo(db_polku)
+
+    rivi = tietokanta.get_run("ajo1", db_path=db_polku)
+    assert rivi["status"] == "kesken"
+    assert "RR_THRESHOLD" in json.loads(rivi["settings_json"])
+
+
+def test_paata_ajo_valmiiksi_asettaa_finished_at_ja_tilan(db_polku):
+    tietokanta.init_database(db_polku)
+    _kaynnista_ajo(db_polku)
+
+    tietokanta.finish_run("ajo1", "valmis", db_path=db_polku)
+
+    rivi = tietokanta.get_run("ajo1", db_path=db_polku)
+    assert rivi["status"] == "valmis"
+    assert rivi["finished_at"] is not None
+
+
+def test_paata_ajo_keskeytyi_tallentaa_virhetekstin(db_polku):
+    tietokanta.init_database(db_polku)
+    _kaynnista_ajo(db_polku)
+
+    tietokanta.finish_run(
+        "ajo1", "keskeytyi", error="Twelve Data ei vastannut", db_path=db_polku
+    )
+
+    rivi = tietokanta.get_run("ajo1", db_path=db_polku)
+    assert rivi["status"] == "keskeytyi"
+    assert rivi["error"] == "Twelve Data ei vastannut"
+
+
+def test_kelvoton_status_hylataan_check_rajoitteella(db_polku):
+    tietokanta.init_database(db_polku)
+    _kaynnista_ajo(db_polku)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        tietokanta.finish_run("ajo1", "olematon", db_path=db_polku)

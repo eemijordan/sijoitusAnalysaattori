@@ -1,4 +1,7 @@
+import json
 from datetime import date, datetime, timedelta, timezone
+
+import pytest
 
 from agents import tekninen_analyytikko, trendinmetsastaja
 from core import orkestroija, tietokanta
@@ -15,7 +18,7 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
     monkeypatch.setattr(
         trendinmetsastaja,
         "fetch_analyst_changes",
-        lambda: [
+        lambda run_id=None: [
             {
                 "symbol": "AAPL",
                 "publishedDate": tuore_iso,
@@ -29,7 +32,7 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
     monkeypatch.setattr(
         trendinmetsastaja,
         "fetch_congress_trades",
-        lambda: [
+        lambda run_id=None: [
             {
                 "symbol": "MSFT",
                 "transactionDate": tuore_pvm,
@@ -38,8 +41,12 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
             },
         ],
     )
-    monkeypatch.setattr(trendinmetsastaja, "fetch_insider_trades", lambda: [])
-    monkeypatch.setattr(trendinmetsastaja, "fetch_price_targets", lambda: [])
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_insider_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_price_targets", lambda run_id=None: []
+    )
     monkeypatch.setattr(trendinmetsastaja, "fetch_us_symbols", lambda: {"AAPL", "MSFT"})
 
     price_data = {
@@ -70,3 +77,45 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
     for rivi in ehdokkaat + pisteytykset + paatokset:
         assert rivi["run_id"] == ajo_id
         assert rivi["run_type"] == "normaali"
+
+    ajon_rivi = tietokanta.get_run(ajo_id, db_path=polku)
+    assert ajon_rivi["status"] == "valmis"
+    assert ajon_rivi["finished_at"] is not None
+    assert ajon_rivi["model_version"]
+    assert "RR_THRESHOLD" in json.loads(ajon_rivi["settings_json"])
+
+
+def test_kaatuva_agentti_jattaa_ajon_keskeytyi_tilaan_ja_virhetekstin(
+    tmp_path, monkeypatch
+):
+    polku = tmp_path / "testi.db"
+
+    class _KaatuvaAgentti:
+        @staticmethod
+        def run(run_id, run_type, db_path):
+            raise RuntimeError("simuloitu agenttivirhe")
+
+    monkeypatch.setattr(orkestroija, "_AGENTIT", [("Testiagentti", _KaatuvaAgentti)])
+
+    with pytest.raises(RuntimeError):
+        orkestroija.run_normal(polku)
+
+    yhteys = tietokanta.open_connection(polku)
+    try:
+        rivi = yhteys.execute(
+            "SELECT * FROM runs ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        yhteys.close()
+
+    assert rivi["status"] == "keskeytyi"
+    assert "simuloitu agenttivirhe" in rivi["error"]
+
+
+def test_git_komennon_epaonnistuessa_get_git_commit_palauttaa_none(monkeypatch):
+    def _epaonnistu(*args, **kwargs):
+        raise FileNotFoundError("git ei loydy")
+
+    monkeypatch.setattr(orkestroija.subprocess, "run", _epaonnistu)
+
+    assert orkestroija._get_git_commit() is None
