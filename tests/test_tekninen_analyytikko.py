@@ -68,6 +68,27 @@ def test_taysi_pistemaara_antaa_10():
     assert indicators["rsi_score"] == 1
 
 
+def test_regressio_calculate_score_ei_muutu_stop_ja_tavoite_lisayksessa():
+    # Vaihe 2g lisasi calculate_stop_and_target()-funktion mutta calculate_score()
+    # itse ei saa muuttua: sama syote -> tasmalleen sama pistemaara, indikaattorit
+    # ja perustelu kuin ennen tata vaihetta, eika stop/tavoite kuulu tahan paluuarvoon.
+    price_data = _price_data(
+        current_price=100.0, sma50=90.0, sma200=80.0, high_52w=120.0, low_52w=60.0
+    )
+    score, indicators, rationale = tekninen_analyytikko.calculate_score(
+        price_data, atr=1.5, rsi=50.0
+    )
+
+    assert score == 10
+    assert indicators["risk_score"] == 3
+    assert indicators["trend_score"] == 4
+    assert indicators["position_score"] == 2
+    assert indicators["rsi_score"] == 1
+    assert "stop_loss" not in indicators
+    assert "target_price" not in indicators
+    assert "rr_ratio" not in indicators
+
+
 def test_matala_volatiliteetti_saa_riskista_3_korkea_0():
     price_data = _price_data(current_price=100.0)
 
@@ -296,6 +317,85 @@ def test_laske_kurssitunnusluvut_palauttaa_viimeisimman_palkin():
     assert tunnusluvut["current_price"] == 100.0
 
 
+# --- calculate_stop_and_target(): puhdas logiikka, ei verkkoa eika tietokantaa ---
+
+
+def test_stop_tavoite_ja_rr_esimerkkilaskelma():
+    stop, tavoite, rr = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, atr=5.0, high_52w=130.0
+    )
+
+    assert stop == 90.0
+    assert tavoite == 130.0
+    assert rr == 3.0
+
+
+def test_puuttuva_atr_jattaa_stopin_ja_rr_n_laskematta_tavoite_lasketaan_silti():
+    stop, tavoite, rr = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, atr=None, high_52w=130.0
+    )
+
+    assert stop is None
+    assert rr is None
+    assert tavoite == 130.0
+
+
+def test_huippu_hinnan_alla_tai_yhtasuuri_jattaa_tavoitteen_ja_rr_n_laskematta():
+    stop_alle, tavoite_alle, rr_alle = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, atr=5.0, high_52w=90.0
+    )
+    stop_yhtasuuri, tavoite_yhtasuuri, rr_yhtasuuri = (
+        tekninen_analyytikko.calculate_stop_and_target(
+            price=100.0, atr=5.0, high_52w=100.0
+        )
+    )
+
+    assert tavoite_alle is None
+    assert rr_alle is None
+    assert stop_alle == 90.0  # stop lasketaan silti
+
+    assert tavoite_yhtasuuri is None
+    assert rr_yhtasuuri is None
+    assert stop_yhtasuuri == 90.0
+
+
+def test_puuttuva_huippu_jattaa_tavoitteen_laskematta():
+    _, tavoite, _ = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, atr=5.0, high_52w=None
+    )
+
+    assert tavoite is None
+
+
+def test_valtava_atr_jolla_stop_menisi_nollaan_tai_alle_jattaa_stopin_laskematta():
+    stop_nolla, _, rr_nolla = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, atr=50.0, high_52w=130.0
+    )
+    stop_negatiivinen, _, rr_negatiivinen = (
+        tekninen_analyytikko.calculate_stop_and_target(
+            price=100.0, atr=60.0, high_52w=130.0
+        )
+    )
+
+    assert stop_nolla is None
+    assert rr_nolla is None
+    assert stop_negatiivinen is None
+    assert rr_negatiivinen is None
+
+
+def test_eri_atr_antaa_eri_rr_suhteen_samalla_hinnalla_ja_huipulla():
+    # Todistaa ettei rr_ratio ole vakio: jos stop ja tavoite tulisivat
+    # molemmat kiinteista ATR-kertoimista, suhde olisi aina sama luku.
+    _, _, rr_matala_riski = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, atr=2.0, high_52w=130.0
+    )
+    _, _, rr_korkea_riski = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, atr=10.0, high_52w=130.0
+    )
+
+    assert rr_matala_riski != rr_korkea_riski
+
+
 # --- _fetch_twelvedata_json(): tilapaisten verkkovirheiden uudelleenyritys ---
 
 
@@ -460,6 +560,9 @@ def test_aja_kirjoittaa_pisteytysrivin_oikealla_ajo_idlla_ja_hinnalla(
     assert rivit[0]["symbol"] == "AAPL"
     assert rivit[0]["run_id"] == "ajo1"
     assert rivit[0]["price"] == 150.0
+    assert rivit[0]["stop_loss"] == 146.0  # 150 - 2 * 2.0
+    assert rivit[0]["target_price"] == 180.0  # 52 viikon huippu
+    assert rivit[0]["rr_ratio"] == 7.5  # (180-150) / (150-146)
 
 
 def test_aja_ohittaa_alle_min_osakekurssin_eika_kutsu_atr_rsi(tmp_path, monkeypatch):

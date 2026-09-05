@@ -160,6 +160,50 @@ def test_ehdokkaan_pisteet_tallentuvat_ja_luetaan_takaisin(db_polku):
     assert rivit[0]["score"] == 7.5
 
 
+# --- technical_scores: stop_loss, target_price, rr_ratio (vaihe 2g) ---
+
+
+def test_pisteytys_tallentaa_stopin_tavoitteen_ja_rr_suhteen(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=8,
+        price=100.0,
+        stop_loss=90.0,
+        target_price=130.0,
+        rr_ratio=3.0,
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_scores("ajo1", db_path=db_polku)
+    assert len(rivit) == 1
+    assert rivit[0]["stop_loss"] == 90.0
+    assert rivit[0]["target_price"] == 130.0
+    assert rivit[0]["rr_ratio"] == 3.0
+
+
+def test_pisteytys_ilman_stop_parametreja_tallentaa_nonet(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=8,
+        price=100.0,
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_scores("ajo1", db_path=db_polku)
+    assert len(rivit) == 1
+    assert rivit[0]["stop_loss"] is None
+    assert rivit[0]["target_price"] is None
+    assert rivit[0]["rr_ratio"] is None
+
+
 # --- runs: ajojen versiointi ---
 
 

@@ -8,7 +8,12 @@ from zoneinfo import ZoneInfo
 import requests
 
 from core import loki, tietokanta
-from core.asetukset import MIN_DAILY_TURNOVER, MIN_SHARE_PRICE, get_twelve_data_key
+from core.asetukset import (
+    MIN_DAILY_TURNOVER,
+    MIN_SHARE_PRICE,
+    STOP_ATR_MULTIPLIER,
+    get_twelve_data_key,
+)
 
 _loki = loki.get_logger(__name__)
 
@@ -399,6 +404,41 @@ def calculate_score(
     return score, indicators, rationale
 
 
+def calculate_stop_and_target(
+    price: float, atr: float | None, high_52w: float | None
+) -> tuple[float | None, float | None, float | None]:
+    """Laskee stop-lossin, tavoitehinnan ja niiden RR-suhteen.
+
+    Palauttaa (stop_loss, target_price, rr_ratio).
+
+    Stop tulee ATR:sta (STOP_ATR_MULTIPLIER x ATR ostohinnan alle), tavoite
+    52 viikon huipusta - tarkoituksella eri lahteista. Jos molemmat olisivat
+    kiinteita ATR-kertoimia (esim. -2 ja +4), RR olisi 4/2 = 2,0 joka ikiselle
+    osakkeelle aina eika luku kertoisi mitaan. Tavoitteen on tultava muualta,
+    jotta suhde oikeasti vaihtelee osakkeittain silla data-arvoa on.
+    """
+    stop_loss = None
+    if atr is not None:
+        candidate_stop = price - STOP_ATR_MULTIPLIER * atr
+        if candidate_stop > 0:
+            stop_loss = candidate_stop
+
+    # Tavoite jaa laskematta jos osake on jo omassa 52 viikon huipussaan -
+    # talle mittarille ei silloin jaa nousuvaraa.
+    target_price = None
+    if high_52w is not None and high_52w > price:
+        target_price = high_52w
+
+    rr_ratio = None
+    if stop_loss is not None and target_price is not None:
+        risk = price - stop_loss
+        reward = target_price - price
+        if risk > 0:
+            rr_ratio = reward / risk
+
+    return stop_loss, target_price, rr_ratio
+
+
 def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     """Hakee ajon kandidaatit, pisteyttää jokaisen ja kirjaa pisteytykset kantaan.
 
@@ -412,6 +452,8 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
 
     recorded = 0
     failed_symbols = []
+    missing_stop = 0
+    missing_target = 0
     first_logged = False
     for candidate in candidates:
         symbol = candidate["symbol"]
@@ -463,6 +505,13 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
             continue
 
         score, indicators, rationale = calculate_score(price_data, atr, rsi)
+        stop_loss, target_price, rr_ratio = calculate_stop_and_target(
+            current_price, atr, price_data.get("high_52w")
+        )
+        if stop_loss is None:
+            missing_stop += 1
+        if target_price is None:
+            missing_target += 1
 
         tietokanta.insert_score(
             run_id=run_id,
@@ -472,6 +521,9 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
             price=current_price,
             indicators_json=json.dumps(indicators),
             rationale=rationale,
+            stop_loss=stop_loss,
+            target_price=target_price,
+            rr_ratio=rr_ratio,
             db_path=db_path,
         )
         recorded += 1
@@ -482,4 +534,8 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
         _loki.error(f"Ajo {run_id} ({run_type}): {summary}")
     else:
         _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
+    _loki.info(
+        f"Ajo {run_id}: stop puuttui {missing_stop}, tavoite puuttui "
+        f"{missing_target} kappaleelta"
+    )
     return summary

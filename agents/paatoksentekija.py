@@ -188,6 +188,8 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
                 buy_price=score["price"],
                 stake_usd=POSITION_SIZE,
                 buy_run_id=run_id,
+                stop_loss=score["stop_loss"],
+                target_price=score["target_price"],
                 db_path=db_path,
             )
             state["active_count"] += 1

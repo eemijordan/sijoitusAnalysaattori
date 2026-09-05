@@ -12,7 +12,7 @@ load_dotenv(BASE_DIR / ".env")
 # Nostetaan aina kun pistemalli tai siihen vaikuttava vakio muuttuu (ks.
 # CLAUDE.md) - ihmisluettava merkintä. Varsinainen totuus ajon toistamiseksi
 # on git-commit (ks. core/orkestroija.py), koska se ei voi unohtua.
-MODEL_VERSION = "1.0"
+MODEL_VERSION = "1.1"
 
 # Sijoitusvakiot (ks. CLAUDE.md)
 INITIAL_CAPITAL = 10000  # USD
@@ -47,6 +47,12 @@ MAX_PRICE_DRIFT = 0.05  # 5 %
 # joten ilman tätä botti ostaisi yhtä innokkaasti 20 % pakkasella kuin
 # ensimmäisenä päivänä.
 PORTFOLIO_STOP_LEVEL = 0.80  # osuus INITIAL_CAPITAL:sta
+# Stop asetetaan kahden keskimääräisen päiväliikkeen (ATR) päähän ostohinnasta:
+# jos kurssi putoaa enemmän kuin kaksi normaalia päivää, tilanne ei ole enää se
+# jonka perusteella ostettiin. Kahta pienempi kerroin laukaisisi stopin
+# tavallisen päivittäisheilunnan takia, suurempi tekisi tappioista tarpeettoman
+# isoja.
+STOP_ATR_MULTIPLIER = 2.0
 
 
 def _get_api_key(env_var: str) -> str:

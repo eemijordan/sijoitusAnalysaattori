@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS technical_scores (
     price REAL,
     indicators_json TEXT,
     rationale TEXT,
+    stop_loss REAL,
+    target_price REAL,
+    rr_ratio REAL,
     created_at TEXT NOT NULL
 );
 
@@ -273,6 +276,9 @@ def insert_score(
     price: float | None = None,
     indicators_json: str | None = None,
     rationale: str | None = None,
+    stop_loss: float | None = None,
+    target_price: float | None = None,
+    rr_ratio: float | None = None,
     db_path=DEFAULT_DB_PATH,
 ) -> int:
     """Lisää rivin technical_scores-tauluun ja palauttaa sen id:n."""
@@ -282,8 +288,9 @@ def insert_score(
             """
             INSERT INTO technical_scores (
                 run_id, run_type, symbol, risk_reward_score, price,
-                indicators_json, rationale, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                indicators_json, rationale, stop_loss, target_price, rr_ratio,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -293,6 +300,9 @@ def insert_score(
                 price,
                 indicators_json,
                 rationale,
+                stop_loss,
+                target_price,
+                rr_ratio,
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )

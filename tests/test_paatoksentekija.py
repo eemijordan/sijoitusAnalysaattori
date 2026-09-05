@@ -345,6 +345,87 @@ def test_aja_jokaisesta_pisteytyksesta_syntyy_tasan_yksi_paatos(tmp_path):
     assert {d["symbol"] for d in decisions} == set(symbolit)
 
 
+# --- vaihe 2g: stop_loss/target_price kulkevat pisteytykselta positioon ---
+
+
+def test_aja_positio_saa_pisteytyksen_stopin_ja_tavoitehinnan(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=8.0,
+        price=100.0,
+        stop_loss=90.0,
+        target_price=130.0,
+        rr_ratio=3.0,
+        db_path=polku,
+    )
+
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
+
+    positiot = tietokanta.get_open_positions(db_path=polku)
+    assert len(positiot) == 1
+    assert positiot[0]["stop_loss"] == 90.0
+    assert positiot[0]["target_price"] == 130.0
+
+
+def test_aja_positio_avataan_vaikka_stop_ja_tavoite_puuttuvat(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    # stop_loss/target_price jaavat Noneksi esim. jos osake on 52 viikon
+    # huipussaan - positio pitaa silti avata (3b osaa myohemmin sulkea
+    # pelkan stopin perusteella, puuttuva tavoite tarkoittaa vain ettei
+    # automaattista voitonottoa ole).
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=8.0,
+        price=100.0,
+        db_path=polku,
+    )
+
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
+
+    positiot = tietokanta.get_open_positions(db_path=polku)
+    assert len(positiot) == 1
+    assert positiot[0]["stop_loss"] is None
+    assert positiot[0]["target_price"] is None
+
+
+def test_regressio_huono_rr_ratio_ei_esta_ostoa(tmp_path):
+    # TARKEIN TESTI: rr_ratio on mittari, ei saanto (ks. CLAUDE.md). Se ei saa
+    # vaikuttaa ostopaatokseen riippumatta siita kuinka huono se on - vain
+    # risk_reward_score (laatupisteytys) ja RR_THRESHOLD ratkaisevat.
+    # rr_ratio otetaan kayttoon paatoksenteossa vasta jos suljetut positiot
+    # myohemmin osoittavat sen erottelevan - jos tama testi alkaa epaonnistua,
+    # se on merkki etta joku on lisannyt rr_ratio-kynnyksen decide_buy():hyn
+    # ilman sita mittausta, ei etta testi pitaisi korjata.
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=RR_THRESHOLD,
+        price=100.0,
+        stop_loss=90.0,
+        target_price=102.0,
+        rr_ratio=0.2,
+        db_path=polku,
+    )
+
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
+
+    decisions = tietokanta.get_decisions("ajo1", db_path=polku)
+    assert decisions[0]["decision"] == "osta"
+
+
 # --- tietokanta.open_position() ---
 
 
