@@ -630,6 +630,32 @@ def finish_run(
     _write_run_metadata(run_id, db_path=db_path)
 
 
+def mark_stale_runs_interrupted(db_path=DEFAULT_DB_PATH) -> int:
+    """Merkitsee päättymättä jääneet ajot keskeytyneiksi. Palauttaa määrän.
+
+    Ajo jää tilaan 'kesken' jos prosessi katkeaa kesken kaiken (kone menee
+    nukkumaan, terminaali suljetaan, kaatuminen) - ilman tätä rivi jäisi
+    'kesken'-tilaan ikuisiksi ajoiksi. Kutsuja vastaa siitä että tämä
+    ajetaan ennen start_run():ia, ei sen jälkeen (ks. core/orkestroija.py).
+    """
+    now = datetime.now().isoformat(timespec="seconds")
+    connection = open_connection(db_path)
+    try:
+        cursor = connection.execute(
+            """
+            UPDATE runs
+            SET status = 'keskeytyi', finished_at = ?,
+                error = 'ajo ei paattynyt (prosessi katkesi)'
+            WHERE status = 'kesken'
+            """,
+            (now,),
+        )
+        connection.commit()
+        return cursor.rowcount
+    finally:
+        connection.close()
+
+
 def get_run(run_id: str, db_path=DEFAULT_DB_PATH) -> dict | None:
     """Palauttaa yhden runs-rivin, tai None jos run_id:tä ei löydy."""
     connection = open_connection(db_path)

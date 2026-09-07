@@ -124,6 +124,32 @@ def test_run_review_paattyy_valmis_tilaan_run_type_tarkistus(tmp_path):
     assert rivi["run_type"] == "tarkistus"
 
 
+def test_vanha_kesken_ajo_siivotaan_ennen_uutta_ajoa(tmp_path):
+    polku = tmp_path / "testi.db"
+
+    # jaljittelee ajoa joka katkesi kesken (kone nukkui, terminaali suljettiin)
+    tietokanta.init_database(polku)
+    tietokanta.start_run(
+        run_id="vanha_kesken",
+        run_type="normaali",
+        settings_json="{}",
+        model_version="1.0",
+        db_path=polku,
+    )
+
+    # ei avoimia positioita eika ehdokkaita -> ei tarvetta monkeypatchata mitaan
+    ajo_id = orkestroija.run_review(polku)
+
+    vanha = tietokanta.get_run("vanha_kesken", db_path=polku)
+    uusi = tietokanta.get_run(ajo_id, db_path=polku)
+
+    # todistaa etta siivous ajetaan ennen start_run():ia: vanha rivi on
+    # keskeytynyt JA uusi ajo on silti paatynyt tilaan 'valmis'.
+    assert vanha["status"] == "keskeytyi"
+    assert vanha["error"] == "ajo ei paattynyt (prosessi katkesi)"
+    assert uusi["status"] == "valmis"
+
+
 def test_git_komennon_epaonnistuessa_get_git_commit_palauttaa_none(monkeypatch):
     def _epaonnistu(*args, **kwargs):
         raise FileNotFoundError("git ei loydy")

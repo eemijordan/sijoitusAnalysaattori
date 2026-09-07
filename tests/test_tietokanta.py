@@ -405,3 +405,56 @@ def test_kelvoton_status_hylataan_check_rajoitteella(db_polku):
 
     with pytest.raises(sqlite3.IntegrityError):
         tietokanta.finish_run("ajo1", "olematon", db_path=db_polku)
+
+
+# --- mark_stale_runs_interrupted(): vaihe 6 ---
+
+
+def test_vanha_kesken_ajo_merkitaan_keskeytyneeksi(db_polku):
+    tietokanta.init_database(db_polku)
+    _kaynnista_ajo(db_polku, run_id="ajo1")
+
+    maara = tietokanta.mark_stale_runs_interrupted(db_path=db_polku)
+
+    rivi = tietokanta.get_run("ajo1", db_path=db_polku)
+    assert maara == 1
+    assert rivi["status"] == "keskeytyi"
+    assert rivi["error"] == "ajo ei paattynyt (prosessi katkesi)"
+    assert rivi["finished_at"] is not None
+
+
+def test_useita_vanhoja_kesken_ajoja_merkitaan_kaikki(db_polku):
+    tietokanta.init_database(db_polku)
+    _kaynnista_ajo(db_polku, run_id="ajo1")
+    _kaynnista_ajo(db_polku, run_id="ajo2")
+    _kaynnista_ajo(db_polku, run_id="ajo3")
+
+    maara = tietokanta.mark_stale_runs_interrupted(db_path=db_polku)
+
+    assert maara == 3
+    for run_id in ("ajo1", "ajo2", "ajo3"):
+        assert tietokanta.get_run(run_id, db_path=db_polku)["status"] == "keskeytyi"
+
+
+def test_valmis_ja_keskeytyi_ajoja_ei_kosketa(db_polku):
+    tietokanta.init_database(db_polku)
+    _kaynnista_ajo(db_polku, run_id="valmis_ajo")
+    tietokanta.finish_run("valmis_ajo", "valmis", db_path=db_polku)
+    _kaynnista_ajo(db_polku, run_id="keskeytynyt_ajo")
+    tietokanta.finish_run(
+        "keskeytynyt_ajo", "keskeytyi", error="alkuperainen virhe", db_path=db_polku
+    )
+
+    maara = tietokanta.mark_stale_runs_interrupted(db_path=db_polku)
+
+    assert maara == 0
+    assert tietokanta.get_run("valmis_ajo", db_path=db_polku)["status"] == "valmis"
+    keskeytynyt = tietokanta.get_run("keskeytynyt_ajo", db_path=db_polku)
+    assert keskeytynyt["status"] == "keskeytyi"
+    assert keskeytynyt["error"] == "alkuperainen virhe"
+
+
+def test_ei_vanhoja_ajoja_palauttaa_nollan(db_polku):
+    tietokanta.init_database(db_polku)
+
+    assert tietokanta.mark_stale_runs_interrupted(db_path=db_polku) == 0

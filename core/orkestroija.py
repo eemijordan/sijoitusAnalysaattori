@@ -52,6 +52,16 @@ def _run_agents(run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     run_id = tietokanta.new_run_id()
 
     tietokanta.init_database(db_path)
+
+    # Ennen start_run():ia, ei sen jalkeen - toisin pain tama merkitsisi juuri
+    # alkaneen ajon keskeytyneeksi. Siivoaa ajot jotka jaivat tilaan 'kesken'
+    # koska prosessi katkesi (kone nukkui, terminaali suljettiin, kaatui).
+    stale_count = tietokanta.mark_stale_runs_interrupted(db_path)
+    if stale_count > 0:
+        _loki.warning(
+            f"{stale_count} paattymatta jaanytta ajoa merkitty keskeytyneeksi"
+        )
+
     tietokanta.start_run(
         run_id=run_id,
         run_type=run_type,
