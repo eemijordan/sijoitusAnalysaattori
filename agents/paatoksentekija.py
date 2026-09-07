@@ -1,13 +1,17 @@
 """Agentti 3: päättää kunkin pisteytyksen perusteella osto, pito vai myynti."""
 
+from datetime import date
+
 from core import loki, tietokanta
 from core.asetukset import (
     EXIT_SCORE_THRESHOLD,
     INITIAL_CAPITAL,
+    MAX_BUYS_PER_RUN,
     MAX_POSITIONS,
     MAX_PRICE_DRIFT,
     PORTFOLIO_STOP_LEVEL,
     POSITION_SIZE,
+    REPURCHASE_COOLDOWN_DAYS,
     RR_THRESHOLD,
 )
 
@@ -15,36 +19,58 @@ _loki = loki.get_logger(__name__)
 
 
 def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, str]:
-    """Soveltaa 6 ostoehtoa järjestyksessä ja palauttaa (päätös, perustelu).
+    """Soveltaa 8 ostoehtoa järjestyksessä ja palauttaa (päätös, perustelu).
 
     Päätös on 'osta' tai 'hylatty'. Ensimmäinen läpäisemätön ehto ratkaisee.
+    Ehdot jakautuvat kolmeen kerrokseen: kelpoisuus (saako tätä symbolia edes
+    harkita), laatu (onko tämä hyvä ehdokas) ja kapasiteetti (mahtuuko tämä
+    salkkuun juuri nyt). Jäähy on kelpoisuuskerroksessa duplikaatin rinnalla:
+    symbolia ei saa harkita olipa se kuinka hyvä tahansa. MAX_BUYS_PER_RUN on
+    sen sijaan kapasiteettikerroksen viimeinen ehto - kun se laukeaa, tiedät
+    että ehdokas olisi muuten ostettu, ja juuri se tieto kertoo onko raja
+    oikealla tasolla.
     """
     symbol = score.get("symbol")
     price = score.get("price")
 
+    # --- Kelpoisuus: saako tätä symbolia edes harkita? ---
+
     # 1. hinta puuttuu tai on virheellinen - ilman sita osakemaaraa ei voi
-    # laskea eika ehtoa 4 tarkistaa.
+    # laskea eika ehtoa 5 tarkistaa.
     if price is None or price <= 0:
         return (
             "hylatty",
             f"hinta puuttuu tai on virheellinen ({price!r}), "
-            f"ehtoa 4 ei voida tarkistaa",
+            f"ehtoa 5 ei voida tarkistaa",
         )
 
     # 2. duplikaatti - sama symboli ei saa olla aktiivisena kahdesti.
     if symbol in state["active_symbols"]:
         return "hylatty", f"{symbol} on jo aktiivinen positio (duplikaatti)"
 
-    # 3. RR-kynnys.
+    # 3. jaahy - stopattu tai muuten suljettu symboli ei saa palata heti,
+    # koska sama vedon asettaminen uudelleen maksaisi saman tappion
+    # toistamiseen (ks. REPURCHASE_COOLDOWN_DAYS).
+    cooldown_until = state["cooldown_until"].get(symbol)
+    if cooldown_until is not None:
+        return (
+            "hylatty",
+            f"{symbol} on jaahylla {cooldown_until} asti "
+            f"(REPURCHASE_COOLDOWN_DAYS {REPURCHASE_COOLDOWN_DAYS})",
+        )
+
+    # --- Laatu: onko tämä hyvä ehdokas? ---
+
+    # 4. RR-kynnys.
     rr = score.get("risk_reward_score")
     if rr is None or rr < RR_THRESHOLD:
         return "hylatty", f"risk_reward_pisteet {rr} < RR_THRESHOLD {RR_THRESHOLD}"
 
-    # 4. hinta ei saa olla karannut liian kauas viiteostohinnasta. Jos
+    # 5. hinta ei saa olla karannut liian kauas viiteostohinnasta. Jos
     # viiteostohintaa ei ole, ehto ohitetaan (ei hylata) ja se nakyy
     # perustelussa - tama ei ole hiljainen huononeminen.
     reference_price = candidate.get("reference_price") if candidate else None
-    price_condition_text = "viiteostohinta puuttuu, ehto 4 ohitettu"
+    price_condition_text = "viiteostohinta puuttuu, ehto 5 ohitettu"
     if reference_price is not None:
         deviation = (price - reference_price) / reference_price
         deviation_pct = deviation * 100
@@ -62,7 +88,9 @@ def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, s
         if abs(deviation) > MAX_PRICE_DRIFT:
             return "hylatty", price_condition_text
 
-    # 5. kapasiteetti.
+    # --- Kapasiteetti: mahtuuko tämä salkkuun juuri nyt? ---
+
+    # 6. kapasiteetti.
     if state["active_count"] >= MAX_POSITIONS:
         return (
             "hylatty",
@@ -70,11 +98,21 @@ def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, s
             f">= MAX_POSITIONS {MAX_POSITIONS}",
         )
 
-    # 6. kateinen.
+    # 7. kateinen.
     if state["cash"] < POSITION_SIZE:
         return (
             "hylatty",
             f"kateinen {state['cash']:.2f} < POSITION_SIZE {POSITION_SIZE}",
+        )
+
+    # 8. ostoraja per ajo - hajauttaa sisaanmenot ajassa (ks.
+    # MAX_BUYS_PER_RUN). Vain onnistunut osto kuluttaa kiintiota, joten tama
+    # ehto tarkistetaan viimeisena: se kertoo ainoastaan siita etteivat
+    # kovat rajat enaa estaneet ostoa.
+    if state["buys_this_run"] >= MAX_BUYS_PER_RUN:
+        return (
+            "hylatty",
+            f"MAX_BUYS_PER_RUN {MAX_BUYS_PER_RUN} taynna tassa ajossa",
         )
 
     rationale = (
@@ -271,15 +309,22 @@ def _run_normal(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) 
 
     sorted_scores = sorted(scores, key=_sort_key)
 
+    cooldown_until = tietokanta.get_cooldown_symbols(
+        REPURCHASE_COOLDOWN_DAYS, date.today(), db_path=db_path
+    )
+
     state = {
         "active_count": len(open_positions),
         "cash": cash,
         "active_symbols": {p["symbol"] for p in open_positions},
+        "buys_this_run": 0,
+        "cooldown_until": cooldown_until,
     }
 
     purchases = 0
     rejected = 0
     missing_reference_price = 0
+    buy_limit_hit = False
 
     for score in sorted_scores:
         symbol = score["symbol"]
@@ -311,13 +356,18 @@ def _run_normal(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) 
             state["active_count"] += 1
             state["cash"] -= POSITION_SIZE
             state["active_symbols"].add(symbol)
+            state["buys_this_run"] += 1
             purchases += 1
         else:
+            if "MAX_BUYS_PER_RUN" in rationale:
+                buy_limit_hit = True
             rejected += 1
 
     summary = (
         f"{len(sorted_scores)} paatosta, {purchases} ostoa, "
         f"{rejected} hylattya, {missing_reference_price} ilman viiteostohintaa"
     )
+    if buy_limit_hit:
+        summary += f", MAX_BUYS_PER_RUN {MAX_BUYS_PER_RUN} esti lisaostoja"
     _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
     return summary

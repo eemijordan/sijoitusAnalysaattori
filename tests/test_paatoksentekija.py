@@ -6,8 +6,10 @@ from agents import paatoksentekija
 from core import tietokanta
 from core.asetukset import (
     EXIT_SCORE_THRESHOLD,
+    MAX_BUYS_PER_RUN,
     MAX_POSITIONS,
     POSITION_SIZE,
+    REPURCHASE_COOLDOWN_DAYS,
     RR_THRESHOLD,
 )
 
@@ -24,11 +26,19 @@ def _candidate(reference_price=100.0, score=5.0):
     return {"reference_price": reference_price, "score": score}
 
 
-def _state(active_count=0, cash=10000.0, active_symbols=None):
+def _state(
+    active_count=0,
+    cash=10000.0,
+    active_symbols=None,
+    buys_this_run=0,
+    cooldown_until=None,
+):
     return {
         "active_count": active_count,
         "cash": cash,
         "active_symbols": active_symbols or set(),
+        "buys_this_run": buys_this_run,
+        "cooldown_until": cooldown_until or {},
     }
 
 
@@ -146,6 +156,67 @@ def test_rr_tarkistetaan_ennen_kapasiteettia():
     assert decision == "hylatty"
     assert "RR_THRESHOLD" in rationale
     assert "MAX_POSITIONS" not in rationale
+
+
+def test_jaahylla_oleva_symboli_hylataan():
+    state = _state(cooldown_until={"AAPL": "2026-10-05"})
+
+    decision, rationale = paatoksentekija.decide_buy(_score(), _candidate(), state)
+
+    assert decision == "hylatty"
+    assert "2026-10-05" in rationale
+    assert f"REPURCHASE_COOLDOWN_DAYS {REPURCHASE_COOLDOWN_DAYS}" in rationale
+
+
+def test_symboli_ei_jaahylla_menee_lapi_normaalisti():
+    state = _state(cooldown_until={"MSFT": "2026-10-05"})
+
+    decision, _ = paatoksentekija.decide_buy(_score(symbol="AAPL"), _candidate(), state)
+
+    assert decision == "osta"
+
+
+def test_ostoraja_taynna_hylkaa():
+    state = _state(buys_this_run=MAX_BUYS_PER_RUN)
+
+    decision, rationale = paatoksentekija.decide_buy(_score(), _candidate(), state)
+
+    assert decision == "hylatty"
+    assert "MAX_BUYS_PER_RUN" in rationale
+
+
+def test_ostoraja_ei_taynna_paasee_lapi():
+    state = _state(buys_this_run=MAX_BUYS_PER_RUN - 1)
+
+    decision, _ = paatoksentekija.decide_buy(_score(), _candidate(), state)
+
+    assert decision == "osta"
+
+
+def test_jaahy_tarkistetaan_ennen_laatuehtoja():
+    # Kerrosjarjestys: jaahy on kelpoisuuskerroksessa, RR-kynnys laatukerroksessa.
+    # Ehdokas joka on seka jaahylla etta alittaa RR-kynnyksen saa jaahy-perustelun.
+    score = _score(risk_reward_score=RR_THRESHOLD - 1)
+    state = _state(cooldown_until={"AAPL": "2026-10-05"})
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "hylatty"
+    assert "jaahylla" in rationale
+    assert "RR_THRESHOLD" not in rationale
+
+
+def test_kovat_rajat_tarkistetaan_ennen_ostorajaa():
+    # Kerrosjarjestys: kateinen on kapasiteettikerroksen kova raja,
+    # MAX_BUYS_PER_RUN sen politiikkaehto. Ehdokas jolta loppuu kateinen
+    # ja joka samalla ylittaisi ostorajan saa kateis-perustelun.
+    state = _state(cash=POSITION_SIZE - 1, buys_this_run=MAX_BUYS_PER_RUN)
+
+    decision, rationale = paatoksentekija.decide_buy(_score(), _candidate(), state)
+
+    assert decision == "hylatty"
+    assert "POSITION_SIZE" in rationale
+    assert "MAX_BUYS_PER_RUN" not in rationale
 
 
 # --- decide_hold_or_sell(): puhdas logiikka, ei tietokantaa eika verkkoa ---
@@ -323,6 +394,137 @@ def test_aja_kateinen_rajoittaa_ostot(tmp_path):
 
     assert len(ostot) == 1
     assert tietokanta.get_cash(db_path=polku) == 500.0
+
+
+def test_aja_max_buys_per_run_rajoittaa_ostot(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    for symbol in ("AAA", "BBB", "CCC"):
+        tietokanta.insert_score(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol=symbol,
+            risk_reward_score=8.0,
+            price=50.0,
+            db_path=polku,
+        )
+
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
+
+    decisions = tietokanta.get_decisions("ajo1", db_path=polku)
+    ostot = [d for d in decisions if d["decision"] == "osta"]
+    hylatyt = [d for d in decisions if d["decision"] == "hylatty"]
+
+    assert len(decisions) == 3
+    assert len(ostot) == MAX_BUYS_PER_RUN
+    assert len(hylatyt) == 1
+    assert "MAX_BUYS_PER_RUN" in hylatyt[0]["rationale"]
+
+
+def test_aja_hylatty_ehdokas_ei_kuluta_ostokiintiota(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    # kaksi liian huonoa (RR alle kynnyksen) ja kaksi kelpaavaa - hylattyjen
+    # ei pida kuluttaa MAX_BUYS_PER_RUN-kiintiota, joten molemmat kelpaavat
+    # ostetaan.
+    for symbol, rr in (
+        ("HUONO1", RR_THRESHOLD - 1),
+        ("HUONO2", RR_THRESHOLD - 1),
+        ("HYVA1", 9.0),
+        ("HYVA2", 9.0),
+    ):
+        tietokanta.insert_score(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol=symbol,
+            risk_reward_score=rr,
+            price=50.0,
+            db_path=polku,
+        )
+
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
+
+    decisions = {
+        d["symbol"]: d["decision"]
+        for d in tietokanta.get_decisions("ajo1", db_path=polku)
+    }
+
+    assert decisions["HYVA1"] == "osta"
+    assert decisions["HYVA2"] == "osta"
+    assert decisions["HUONO1"] == "hylatty"
+    assert decisions["HUONO2"] == "hylatty"
+
+
+def test_aja_stopattu_symboli_hylataan_jaahyyn_seuraavassa_ajossa(tmp_path):
+    # Vaiheen tarkein testi. Kun stop laukeaa, positio suljetaan ja
+    # duplikaattilukko lakkaa patemasta - ilman jaahya Agentti 1 voisi loytaa
+    # saman symbolin uudelleen, usein tasmalleen samasta analyytikkorivista
+    # (se kelpaa 14 vrk), ja botti ostaisi, stoppaisi ja ostaisi uudelleen
+    # ilman etta mitaan uutta tietoa on tullut. Jaahy katkaisee taman kierteen.
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        db_path=polku,
+    )
+    tietokanta.close_position(
+        symbol="AAPL", sell_price=90.0, sell_run_id="ajo0", db_path=polku
+    )
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=9.0,
+        price=95.0,
+        db_path=polku,
+    )
+
+    paatoksentekija.run("ajo1", "normaali", db_path=polku)
+
+    decisions = tietokanta.get_decisions("ajo1", db_path=polku)
+    assert len(decisions) == 1
+    assert decisions[0]["decision"] == "hylatty"
+    assert "jaahylla" in decisions[0]["rationale"]
+    assert tietokanta.has_open_position("AAPL", db_path=polku) is False
+
+
+def test_aja_tarkistus_ei_valita_jaahysta_eika_ostorajasta(tmp_path):
+    # Regressio: jaahy ja MAX_BUYS_PER_RUN koskevat vain ostoja, eivat myynteja.
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        stop_loss=90.0,
+        target_price=130.0,
+        db_path=polku,
+    )
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="tarkistus",
+        symbol="AAPL",
+        risk_reward_score=8.0,
+        price=110.0,
+        db_path=polku,
+    )
+
+    tulos = paatoksentekija.run("ajo1", "tarkistus", db_path=polku)
+
+    decisions = tietokanta.get_decisions("ajo1", db_path=polku)
+    assert len(decisions) == 1
+    assert decisions[0]["decision"] == "pida"
+    assert "1 pidettya" in tulos
 
 
 def test_aja_jarjestyssaanto_rr_sitten_ehdokkaan_pisteet_sitten_aakkoset(tmp_path):

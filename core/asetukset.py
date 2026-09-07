@@ -59,6 +59,15 @@ STOP_ATR_MULTIPLIER = 2.0
 # sama luku, seitsemän pisteen tuntumassa värähtelevä osake ostettaisiin ja
 # myytäisiin vuorotellen joka tarkistuksessa. Kaista poistaa sen kokonaan.
 EXIT_SCORE_THRESHOLD = 5
+# Hajauttaa sisaanmenot ajassa. Ilman rajaa salkku tayttyy noin neljassa
+# ajossa eli kahdessa viikossa, jolloin koko salkku edustaa yhta
+# markkinatilannetta eika tuloksesta voi paatella mallista mitaan.
+MAX_BUYS_PER_RUN = 2
+# Stop laukesi koska saanto sanoi etta veto oli vaara. Saman vedon
+# asettaminen uudelleen muutaman paivan paasta maksaa saman tappion
+# toistamiseen. 30 vrk on riittavan pitka katkaisemaan putoavan puukon ja
+# riittavan lyhyt salliakseen aidon paluun myohemmin.
+REPURCHASE_COOLDOWN_DAYS = 30
 
 
 def _get_api_key(env_var: str) -> str:

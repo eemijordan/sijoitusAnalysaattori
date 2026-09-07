@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import date, timedelta
 
 import pytest
 
@@ -202,6 +203,130 @@ def test_pisteytys_ilman_stop_parametreja_tallentaa_nonet(db_polku):
     assert rivit[0]["stop_loss"] is None
     assert rivit[0]["target_price"] is None
     assert rivit[0]["rr_ratio"] is None
+
+
+# --- get_cooldown_symbols(): vaihe 3c ---
+
+
+def test_jaahy_voimassa_kun_myyty_hiljattain(db_polku):
+    tietokanta.init_database(db_polku)
+    tanaan = date(2026, 9, 7)
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo1",
+        db_path=db_polku,
+    )
+    tietokanta.close_position(
+        symbol="AAPL", sell_price=90.0, sell_run_id="ajo1", db_path=db_polku
+    )
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        myyty = (tanaan - timedelta(days=10)).isoformat()
+        yhteys.execute(
+            "UPDATE positions SET sell_date = ? WHERE symbol = 'AAPL'", (myyty,)
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    jaahyt = tietokanta.get_cooldown_symbols(30, tanaan, db_path=db_polku)
+
+    assert "AAPL" in jaahyt
+    assert (
+        jaahyt["AAPL"] == (tanaan - timedelta(days=10) + timedelta(days=30)).isoformat()
+    )
+
+
+def test_jaahy_ei_voimassa_kun_myyty_kauan_sitten(db_polku):
+    tietokanta.init_database(db_polku)
+    tanaan = date(2026, 9, 7)
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo1",
+        db_path=db_polku,
+    )
+    tietokanta.close_position(
+        symbol="AAPL", sell_price=90.0, sell_run_id="ajo1", db_path=db_polku
+    )
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        myyty = (tanaan - timedelta(days=40)).isoformat()
+        yhteys.execute(
+            "UPDATE positions SET sell_date = ? WHERE symbol = 'AAPL'", (myyty,)
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    jaahyt = tietokanta.get_cooldown_symbols(30, tanaan, db_path=db_polku)
+
+    assert "AAPL" not in jaahyt
+
+
+def test_jaahy_kaytetaan_viimeisinta_myyntipaivaa(db_polku):
+    tietokanta.init_database(db_polku)
+    tanaan = date(2026, 9, 7)
+
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        # kaksi suljettua positiota samalle symbolille, eri myyntipaivilla
+        yhteys.execute(
+            """
+            INSERT INTO positions (
+                symbol, status, buy_price, quantity, stake_usd, buy_date,
+                buy_run_id, sell_date
+            ) VALUES ('AAPL', 'suljettu', 100, 10, 1000, '2026-01-01', 'ajo1', ?)
+            """,
+            ((tanaan - timedelta(days=50)).isoformat(),),
+        )
+        yhteys.execute(
+            """
+            INSERT INTO positions (
+                symbol, status, buy_price, quantity, stake_usd, buy_date,
+                buy_run_id, sell_date
+            ) VALUES ('AAPL', 'suljettu', 90, 10, 900, '2026-02-01', 'ajo2', ?)
+            """,
+            ((tanaan - timedelta(days=5)).isoformat(),),
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    jaahyt = tietokanta.get_cooldown_symbols(30, tanaan, db_path=db_polku)
+
+    # vanhempi myynti (50 vrk sitten) olisi jo jaahyn ulkopuolella, mutta
+    # tuoreempi (5 vrk sitten) on yha voimassa - viimeisin ratkaisee.
+    assert "AAPL" in jaahyt
+    assert (
+        jaahyt["AAPL"] == (tanaan - timedelta(days=5) + timedelta(days=30)).isoformat()
+    )
+
+
+def test_jaahy_ohittaa_avoimen_position(db_polku):
+    tietokanta.init_database(db_polku)
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo1",
+        db_path=db_polku,
+    )
+
+    jaahyt = tietokanta.get_cooldown_symbols(30, date.today(), db_path=db_polku)
+
+    assert jaahyt == {}
+
+
+def test_jaahy_tyhja_taulu_palauttaa_tyhjan_sanakirjan(db_polku):
+    tietokanta.init_database(db_polku)
+
+    jaahyt = tietokanta.get_cooldown_symbols(30, date.today(), db_path=db_polku)
+
+    assert jaahyt == {}
 
 
 # --- runs: ajojen versiointi ---

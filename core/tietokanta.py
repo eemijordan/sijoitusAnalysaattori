@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from core.asetukset import INITIAL_CAPITAL
@@ -204,6 +204,39 @@ def has_open_position(symbol: str, db_path=DEFAULT_DB_PATH) -> bool:
         return row is not None
     finally:
         connection.close()
+
+
+def get_cooldown_symbols(
+    cooldown_days: int, today: date, db_path=DEFAULT_DB_PATH
+) -> dict[str, str]:
+    """Palauttaa symbolit joiden uudelleenoston jaahy on yha voimassa.
+
+    Avaimena symboli, arvona jaahyn paattymispaiva ISO-muodossa. Perustuu
+    suljettujen positioiden symbolikohtaiseen viimeisimpaan sell_date:en -
+    jos sama symboli on suljettu useaan kertaan, vain viimeisin myyntipaiva
+    ratkaisee. today annetaan parametrina eika lueta kellosta, jotta funktio
+    on testattavissa ilman ajan jaadyttamista.
+    """
+    connection = open_connection(db_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT symbol, MAX(sell_date) AS viimeisin_myynti
+            FROM positions
+            WHERE sell_date IS NOT NULL
+            GROUP BY symbol
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+
+    cooldowns: dict[str, str] = {}
+    for row in rows:
+        sell_date = date.fromisoformat(row["viimeisin_myynti"][:10])
+        cooldown_until = sell_date + timedelta(days=cooldown_days)
+        if cooldown_until > today:
+            cooldowns[row["symbol"]] = cooldown_until.isoformat()
+    return cooldowns
 
 
 def insert_candidate(
