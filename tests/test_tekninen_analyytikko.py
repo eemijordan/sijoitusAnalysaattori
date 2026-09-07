@@ -772,6 +772,106 @@ def test_aja_kaikki_onnistuu_yhteenveto_ilman_epaonnistumisosaa(tmp_path, monkey
     assert summary == "1 pisteytysta kirjattu"
 
 
+def test_aja_tarkistus_hakee_ja_tallentaa_vertailukurssin(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        db_path=polku,
+    )
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="tarkistus",
+        symbol="AAPL",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data_aapl = _price_data(current_price=100.0)
+    price_data_spy = _price_data(current_price=500.0)
+
+    def _fetch_price_data(symbol):
+        return price_data_spy if symbol == "SPY" else price_data_aapl
+
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_price_data", _fetch_price_data)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 1.5)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 50.0)
+
+    tekninen_analyytikko.run("ajo1", "tarkistus", db_path=polku)
+
+    vertailu = tietokanta.get_market_reference("ajo1", "SPY", db_path=polku)
+    assert vertailu is not None
+    assert vertailu["price"] == 500.0
+
+
+def test_aja_tarkistus_ilman_avoimia_positioita_tallentaa_vertailukurssin(
+    tmp_path, monkeypatch
+):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    # ei avoimia positioita eika ehdokkaita -> silmukka ei pyori kertaakaan,
+    # mutta vertailukurssi pitaa silti tallentua etta tuottokayraan ei jaa
+    # aukkoa niina paivina kun salkku on pelkkaa kateista.
+
+    price_data_spy = _price_data(current_price=500.0)
+    monkeypatch.setattr(
+        tekninen_analyytikko, "fetch_price_data", lambda symbol: price_data_spy
+    )
+
+    tekninen_analyytikko.run("ajo1", "tarkistus", db_path=polku)
+
+    vertailu = tietokanta.get_market_reference("ajo1", "SPY", db_path=polku)
+    assert vertailu is not None
+    assert vertailu["price"] == 500.0
+
+
+def test_aja_tarkistus_vertailuhaku_epaonnistuu_ei_kaada_ajoa(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    def _epaonnistu(symbol):
+        raise requests.exceptions.RequestException("simuloitu verkkovirhe")
+
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_price_data", _epaonnistu)
+
+    summary = tekninen_analyytikko.run("ajo1", "tarkistus", db_path=polku)
+
+    assert tietokanta.get_market_reference("ajo1", "SPY", db_path=polku) is None
+    assert summary == "0 pisteytysta kirjattu"
+
+
+def test_aja_normaali_ei_hae_vertailukurssia(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data_aapl = _price_data(current_price=100.0)
+
+    def _ei_saa_kutsua_spy(symbol):
+        if symbol == "SPY":
+            raise AssertionError("normaaliajo ei saa hakea vertailukurssia")
+        return price_data_aapl
+
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_price_data", _ei_saa_kutsua_spy)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 1.5)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 50.0)
+
+    tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+    assert tietokanta.get_market_reference("ajo1", "SPY", db_path=polku) is None
+
+
 def test_aja_ohjelmointivirhe_calculate_scoressa_ei_ohitu_hiljaa(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
     tietokanta.init_database(polku)

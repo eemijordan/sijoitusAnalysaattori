@@ -98,6 +98,26 @@ CREATE TABLE IF NOT EXISTS runs (
     model_version TEXT NOT NULL,
     git_commit TEXT
 );
+
+CREATE TABLE IF NOT EXISTS market_reference (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    price REAL NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    snapshot_date TEXT NOT NULL,
+    cash REAL NOT NULL,
+    positions_value REAL NOT NULL,
+    total_value REAL NOT NULL,
+    benchmark_symbol TEXT,
+    benchmark_price REAL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -342,6 +362,24 @@ def insert_score(
         )
         connection.commit()
         return cursor.lastrowid
+    finally:
+        connection.close()
+
+
+def get_latest_score_for_symbol(symbol: str, db_path=DEFAULT_DB_PATH) -> dict | None:
+    """Palauttaa symbolin viimeisimman technical_scores-rivin (mika tahansa ajo).
+
+    Kaytetaan tilannekuvan positioarvostuksessa (Agentti 4) kun symbolilla ei
+    ole tuoretta pisteytysta talta ajolta - haetaan silloin viimeisin aiempi
+    hinta sen sijaan etta positio jaisi kokonaan arvostamatta.
+    """
+    connection = open_connection(db_path)
+    try:
+        row = connection.execute(
+            "SELECT * FROM technical_scores WHERE symbol = ? ORDER BY id DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        return dict(row) if row is not None else None
     finally:
         connection.close()
 
@@ -675,6 +713,94 @@ def get_decisions(run_id: str, db_path=DEFAULT_DB_PATH) -> list[dict]:
         rows = connection.execute(
             "SELECT * FROM decisions WHERE run_id = ? ORDER BY id",
             (run_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def insert_market_reference(
+    run_id: str, symbol: str, price: float, db_path=DEFAULT_DB_PATH
+) -> int:
+    """Lisää rivin market_reference-tauluun ja palauttaa sen id:n."""
+    connection = open_connection(db_path)
+    try:
+        cursor = connection.execute(
+            """
+            INSERT INTO market_reference (run_id, symbol, price, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (run_id, symbol, price, datetime.now().isoformat(timespec="seconds")),
+        )
+        connection.commit()
+        return cursor.lastrowid
+    finally:
+        connection.close()
+
+
+def get_market_reference(
+    run_id: str, symbol: str, db_path=DEFAULT_DB_PATH
+) -> dict | None:
+    """Palauttaa yhden ajon vertailukurssirivin, tai None jos sitä ei ole."""
+    connection = open_connection(db_path)
+    try:
+        row = connection.execute(
+            "SELECT * FROM market_reference WHERE run_id = ? AND symbol = ?",
+            (run_id, symbol),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        connection.close()
+
+
+def insert_snapshot(
+    run_id: str,
+    snapshot_date: str,
+    cash: float,
+    positions_value: float,
+    total_value: float,
+    benchmark_symbol: str | None = None,
+    benchmark_price: float | None = None,
+    db_path=DEFAULT_DB_PATH,
+) -> int:
+    """Lisää rivin portfolio_snapshots-tauluun ja palauttaa sen id:n.
+
+    benchmark_price on nullable tarkoituksella: jos vertailuhaku epaonnistui,
+    salkun arvo pitaa tallentaa silti - mittausta ei saa menettaa siksi ettei
+    vertailukohta vastannut.
+    """
+    connection = open_connection(db_path)
+    try:
+        cursor = connection.execute(
+            """
+            INSERT INTO portfolio_snapshots (
+                run_id, snapshot_date, cash, positions_value, total_value,
+                benchmark_symbol, benchmark_price, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                snapshot_date,
+                cash,
+                positions_value,
+                total_value,
+                benchmark_symbol,
+                benchmark_price,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        connection.commit()
+        return cursor.lastrowid
+    finally:
+        connection.close()
+
+
+def get_snapshots(db_path=DEFAULT_DB_PATH) -> list[dict]:
+    """Palauttaa kaikki tilannekuvat aikajarjestyksessa (id:n mukaan)."""
+    connection = open_connection(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT * FROM portfolio_snapshots ORDER BY id"
         ).fetchall()
         return [dict(row) for row in rows]
     finally:

@@ -14,6 +14,8 @@ ODOTETUT_TAULUT = {
     "decisions",
     "positions",
     "runs",
+    "market_reference",
+    "portfolio_snapshots",
 }
 
 
@@ -458,3 +460,106 @@ def test_ei_vanhoja_ajoja_palauttaa_nollan(db_polku):
     tietokanta.init_database(db_polku)
 
     assert tietokanta.mark_stale_runs_interrupted(db_path=db_polku) == 0
+
+
+# --- market_reference ja portfolio_snapshots: vaihe 4a ---
+
+
+def test_vertailukurssi_tallentuu_ja_luetaan_takaisin(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_market_reference(
+        run_id="ajo1", symbol="SPY", price=500.0, db_path=db_polku
+    )
+
+    rivi = tietokanta.get_market_reference("ajo1", "SPY", db_path=db_polku)
+    assert rivi["run_id"] == "ajo1"
+    assert rivi["symbol"] == "SPY"
+    assert rivi["price"] == 500.0
+
+
+def test_vertailukurssi_puuttuva_palauttaa_nonen(db_polku):
+    tietokanta.init_database(db_polku)
+
+    assert tietokanta.get_market_reference("ajo1", "SPY", db_path=db_polku) is None
+
+
+def test_tilannekuva_tallentuu_ja_luetaan_takaisin_aikajarjestyksessa(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_snapshot(
+        run_id="ajo1",
+        snapshot_date="2026-09-01",
+        cash=8000.0,
+        positions_value=2000.0,
+        total_value=10000.0,
+        benchmark_symbol="SPY",
+        benchmark_price=500.0,
+        db_path=db_polku,
+    )
+    tietokanta.insert_snapshot(
+        run_id="ajo2",
+        snapshot_date="2026-09-08",
+        cash=8000.0,
+        positions_value=2200.0,
+        total_value=10200.0,
+        benchmark_symbol="SPY",
+        benchmark_price=505.0,
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_snapshots(db_path=db_polku)
+    assert len(rivit) == 2
+    assert rivit[0]["run_id"] == "ajo1"
+    assert rivit[1]["run_id"] == "ajo2"
+    assert rivit[0]["total_value"] == 10000.0
+    assert rivit[1]["benchmark_price"] == 505.0
+
+
+def test_tilannekuva_ilman_vertailukurssia_tallentaa_nonen(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_snapshot(
+        run_id="ajo1",
+        snapshot_date="2026-09-01",
+        cash=10000.0,
+        positions_value=0.0,
+        total_value=10000.0,
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_snapshots(db_path=db_polku)
+    assert len(rivit) == 1
+    assert rivit[0]["benchmark_symbol"] is None
+    assert rivit[0]["benchmark_price"] is None
+
+
+def test_viimeisin_pisteytys_symbolille_palauttaa_uusimman_yli_ajojen(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=8.0,
+        price=100.0,
+        db_path=db_polku,
+    )
+    tietokanta.insert_score(
+        run_id="ajo2",
+        run_type="tarkistus",
+        symbol="AAPL",
+        risk_reward_score=6.0,
+        price=110.0,
+        db_path=db_polku,
+    )
+
+    rivi = tietokanta.get_latest_score_for_symbol("AAPL", db_path=db_polku)
+    assert rivi["run_id"] == "ajo2"
+    assert rivi["price"] == 110.0
+
+
+def test_viimeisin_pisteytys_puuttuva_symboli_palauttaa_nonen(db_polku):
+    tietokanta.init_database(db_polku)
+
+    assert tietokanta.get_latest_score_for_symbol("AAPL", db_path=db_polku) is None

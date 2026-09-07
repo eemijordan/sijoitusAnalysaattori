@@ -9,6 +9,7 @@ import requests
 
 from core import loki, tietokanta
 from core.asetukset import (
+    BENCHMARK_SYMBOL,
     MIN_DAILY_TURNOVER,
     MIN_SHARE_PRICE,
     STOP_ATR_MULTIPLIER,
@@ -439,6 +440,42 @@ def calculate_stop_and_target(
     return stop_loss, target_price, rr_ratio
 
 
+def _fetch_and_store_benchmark(run_id: str, db_path) -> None:
+    """Hakee BENCHMARK_SYMBOL:n hinnan tarkistusajon tuottovertailua varten.
+
+    Kutsutaan ehdokassilmukan ulkopuolella, jotta vertailukurssi tallentuu
+    myos silloin kun avoimia positioita on nolla eika silmukka pyori
+    kertaakaan - muuten tuottokayraan jaisi aukko niina paivina kun salkku
+    on pelkkaa kateista. Haun epaonnistuminen ei saa kaataa ajoa: yksi
+    puuttuva vertailukurssi ei ole syy hylata koko tarkistusajon tuloksia,
+    joten salkun arvo on silti tallennettava (ks. Agentti 4).
+    """
+    try:
+        price_data = fetch_price_data(BENCHMARK_SYMBOL)
+        if price_data is None:
+            _loki.warning(
+                f"{BENCHMARK_SYMBOL}: time_series ei palauttanut dataa vertailulle"
+            )
+            return
+        tietokanta.insert_market_reference(
+            run_id=run_id,
+            symbol=BENCHMARK_SYMBOL,
+            price=price_data["current_price"],
+            db_path=db_path,
+        )
+    except (
+        IncompletePriceDataError,
+        requests.RequestException,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as error:
+        _loki.warning(
+            f"{BENCHMARK_SYMBOL}: vertailukurssin haku epaonnistui, "
+            f"jatketaan ilman sita - {error}"
+        )
+
+
 def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     """Hakee ajon kandidaatit, pisteyttää jokaisen ja kirjaa pisteytykset kantaan.
 
@@ -449,6 +486,11 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     # tavalla - Agentti 1 on jo kirjoittanut aktiiviset positiot naiksi
     # tarkistusajossa, joten sama haara riittaa.
     candidates = tietokanta.get_candidates(run_id, advanced_only=True, db_path=db_path)
+
+    # Vertailukurssi haetaan vain tarkistusajossa - normaaliajolla ei viela
+    # ole tilannekuvaa jota vasten vertailla.
+    if run_type == "tarkistus":
+        _fetch_and_store_benchmark(run_id, db_path)
 
     recorded = 0
     failed_symbols = []

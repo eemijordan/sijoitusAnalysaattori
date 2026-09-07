@@ -68,6 +68,11 @@ MAX_BUYS_PER_RUN = 2
 # toistamiseen. 30 vrk on riittavan pitka katkaisemaan putoavan puukon ja
 # riittavan lyhyt salliakseen aidon paluun myohemmin.
 REPURCHASE_COOLDOWN_DAYS = 30
+# Twelve Data ei tarjoa indekseja itsessaan, joten S&P 500:n korvikkeena
+# kaytetaan sita seuraavaa ETF:aa. Vertailukohdan pitaa olla se mihin raha
+# olisi vaihtoehtoisesti laitettu - laaja markkina, ei toinen yksittainen
+# osake.
+BENCHMARK_SYMBOL = "SPY"
 
 
 def _get_api_key(env_var: str) -> str:
