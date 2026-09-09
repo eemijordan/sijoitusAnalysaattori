@@ -3,9 +3,11 @@
 import json
 import subprocess
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from agents import paatoksentekija, raportoija, tekninen_analyytikko, trendinmetsastaja
-from core import asetukset, loki, tietokanta
+from core import asetukset, loki, porssiaika, tietokanta
 
 _loki = loki.get_logger(__name__)
 
@@ -15,6 +17,25 @@ _AGENTIT = [
     ("Agentti 3 - Paatoksentekija", paatoksentekija),
     ("Agentti 4 - Raportoija", raportoija),
 ]
+
+
+class DataNotReadyError(RuntimeError):
+    """Nostetaan kun markkinadata ei viela ole valmista - ei ohjelmointivirhe.
+
+    Eri poikkeustyyppi kuin ajon aikaiset RuntimeError-kaatumiset, jotta
+    __main__-lohko (ja dashboard/nakyma.py paluukoodin kautta) voi erottaa
+    kieltaytymisen kaatumisesta - kieltaytyminen ei ole ajo eika saa nayttaa
+    samalta kuin jarjestelman hajoaminen.
+    """
+
+
+def _data_ready_now() -> tuple[bool, str]:
+    """Ohut kääre porssiaika.is_data_ready():n ympärillä nykyhetkellä.
+
+    Testit korvaavat tämän suoraan sen sijaan että joutuisivat odottamaan
+    tai jäädyttämään oikeaa New Yorkin kelloa.
+    """
+    return porssiaika.is_data_ready(datetime.now(ZoneInfo("America/New_York")))
 
 
 def _get_git_commit() -> str | None:
@@ -48,9 +69,11 @@ def _run_agents(run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     silloin ajamatta. Ajo kirjataan aina runs-tauluun: 'kesken' heti
     alussa, ja lopuksi 'valmis' tai 'keskeytyi' virheteksteineen - poikkeus
     nousee silti edelleen läpi kirjaamisen jälkeen.
-    """
-    run_id = tietokanta.new_run_id()
 
+    Nostaa DataNotReadyError:in eika kirjaa mitaan runs-tauluun, jos
+    markkinadata ei viela ole valmista (ks. porssiaika.is_data_ready) -
+    kieltaytyminen ei ole ajo, joten sita ei kirjata alkaneeksi.
+    """
     added_columns = tietokanta.init_database(db_path)
     if added_columns:
         _loki.info(f"Kanta paivitetty: lisatty sarakkeet {', '.join(added_columns)}")
@@ -58,11 +81,26 @@ def _run_agents(run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     # Ennen start_run():ia, ei sen jalkeen - toisin pain tama merkitsisi juuri
     # alkaneen ajon keskeytyneeksi. Siivoaa ajot jotka jaivat tilaan 'kesken'
     # koska prosessi katkesi (kone nukkui, terminaali suljettiin, kaatui).
+    # Ei liity data-valmiustarkistukseen alla - ajetaan aina.
     stale_count = tietokanta.mark_stale_runs_interrupted(db_path)
     if stale_count > 0:
         _loki.warning(
             f"{stale_count} paattymatta jaanytta ajoa merkitty keskeytyneeksi"
         )
+
+    # Halpa ennakkotarkistus ENNEN run_id:ta ja start_run():ia - vartija
+    # istuu muuten Agentti 2:n sisalla symbolikohtaisesti, jolloin Agentti 1
+    # ehtii jo tehda taydet API-kutsut ja arkistokirjoitukset ennen kuin
+    # tulos heitetaan pois. Ei runs-rivia, ei API-kutsuja, ei arkistoa, ei
+    # orpoja ehdokasriveja - ajoa ei aloitettu, joten sita ei kirjata
+    # aloitetuksi. Ei korvaa is_bar_ready():ta, joka jaa Agentti 2:een
+    # tarkkana varmistuksena (katsoo oikeaa palkkia, hoitaa pyhapaivat).
+    ready, syy = _data_ready_now()
+    if not ready:
+        _loki.warning(f"Ajoa ei kaynnisteta: {syy}")
+        raise DataNotReadyError(syy)
+
+    run_id = tietokanta.new_run_id()
 
     tietokanta.start_run(
         run_id=run_id,
@@ -110,6 +148,12 @@ if __name__ == "__main__":
     _ajo_funktio = run_review if _run_type == "tarkistus" else run_normal
     try:
         _ajo_funktio()
+    except DataNotReadyError as error:
+        # Oma paluukoodi (2) - kieltaytyminen ei ole kaatuminen (1), ja
+        # niiden pitaa nayttaa erilaisilta jokaiselle joka runs-taulua tai
+        # tata paluukoodia myohemmin katsoo (ks. dashboard/nakyma.py).
+        print(f"DATA EI VALMIS: {error}")
+        sys.exit(2)
     except RuntimeError as error:
         print(f"VIRHE: {error}")
         sys.exit(1)

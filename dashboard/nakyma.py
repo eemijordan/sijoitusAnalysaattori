@@ -9,7 +9,6 @@ import sqlite3
 import subprocess
 import sys
 from datetime import datetime
-from datetime import time as kellonaika
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -23,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from core import tietokanta  # noqa: E402
+from core import porssiaika, tietokanta  # noqa: E402
 
 st.set_page_config(page_title="Sijoitusanalysaattori", layout="wide")
 st.title("Sijoitusanalysaattori")
@@ -64,16 +63,21 @@ def _tyhjat_viivoiksi(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _porssi_on_auki(nyt_ny: datetime) -> bool:
-    """Karkea arvio: US-porssi auki ma-pe klo 9:30-16:00 New Yorkin aikaa.
+def _ajoikkuna_huomautus(nyt_et: datetime) -> str | None:
+    """Palauttaa huomautustekstin jos data ei ole viela valmis, muuten None.
 
-    Ei huomioi pyhapaivia - riittava tarkkuus kayttajalle nayttavaan
-    huomautukseen, ei paatoksentekoon (vrt. tekninen_analyytikko.py:n
-    is_bar_ready(), joka on tarkka koska sen varaan nojaa ajon keskeytys).
+    Kayttaa samaa porssiaika.is_data_ready()-tarkistusta jota orkestroija
+    kayttaa ajon kieltamiseen - nakyma ja orkestroija katsovat samaa
+    totuutta. Korvaa vanhan "porssi auki" -palkin, joka nayttaytyi vain
+    porssin aukioloaikana: ajo kieltaytyy myos klo 16:00-24:00 New Yorkin
+    aikaa porssin sulkeuduttua, koska paiva ei vaihdu ennen keskiyota -
+    siina ikkunassa vanha palkki nayttai vihreaa valoa ja punaisen virheen
+    perään. Kertoo milloin ajo onnistuu, ei mika on kiinni.
     """
-    if nyt_ny.weekday() >= 5:  # 5 = lauantai, 6 = sunnuntai
-        return False
-    return kellonaika(9, 30) <= nyt_ny.time() < kellonaika(16, 0)
+    valmis, _ = porssiaika.is_data_ready(nyt_et)
+    if valmis:
+        return None
+    return "Päivän data ei ole vielä valmis. Ajo onnistuu klo 07:00–16:30 Suomen aikaa."
 
 
 def _aja_orkestroija(ajotyyppi: str, loki_paikka) -> int:
@@ -84,9 +88,14 @@ def _aja_orkestroija(ajotyyppi: str, loki_paikka) -> int:
     tulostuksen (muuten et nakisi mitaan ennen kuin ajo on ohi), ja
     stderr=STDOUT yhdistaa virhevirran koska Pythonin logging kirjoittaa
     oletuksena sinne - ilman yhdistamista live-loki olisi tyhja vaikka ajo
-    toimisi. Palauttaa paluukoodin; jos Popen itse epaonnistuu (esim. venv
-    puuttuu), poikkeus nousee kutsujalle asti - sita ei niellä tassa, jotta
-    kutsuja voi nayttaa sen kayttajalle eika mikaan epaonnistu hiljaa.
+    toimisi. Palauttaa paluukoodin (0 onnistui, 1 kaatui, 2 data ei ollut
+    valmis); jos Popen itse epaonnistuu (esim. venv puuttuu), poikkeus
+    nousee kutsujalle asti - sita ei niellä tassa, jotta kutsuja voi
+    nayttaa sen kayttajalle eika mikaan epaonnistu hiljaa.
+
+    EI kirjoita lopputulosta loki_paikka:an - vain lokirivit. Kutsuja
+    paattaa miten paluukoodi nayttaytyy (vari, teksti), jotta lokiplaceholder
+    ei tyhjenny/ylikirjoitu ennen kuin kayttaja nakee sen sisallon.
     """
     venv_python = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
     process = subprocess.Popen(
@@ -104,14 +113,7 @@ def _aja_orkestroija(ajotyyppi: str, loki_paikka) -> int:
         rivit.append(rivi.rstrip())
         loki_paikka.code("\n".join(rivit))
 
-    paluukoodi = process.wait()
-    if paluukoodi == 0:
-        loki_paikka.success(f"Ajo valmis (paluukoodi {paluukoodi}).")
-    else:
-        loki_paikka.error(
-            f"Ajo epaonnistui (paluukoodi {paluukoodi}). Katso loki ylla."
-        )
-    return paluukoodi
+    return process.wait()
 
 
 avoimet_positiot, virhe_positiot = _turvallinen_haku(tietokanta.get_open_positions)
@@ -123,11 +125,11 @@ ylarivi = st.columns(3)
 
 with ylarivi[0], st.container(border=True):
     st.subheader("Hallinta")
-    if _porssi_on_auki(datetime.now(ZoneInfo("America/New_York"))):
-        st.info(
-            "US-pörssi on nyt auki. Ajo todennäköisesti keskeytyy, koska "
-            "päivän palkki on kesken."
-        )
+    _huomautus = _ajoikkuna_huomautus(datetime.now(ZoneInfo("America/New_York")))
+    if _huomautus is not None:
+        st.info(_huomautus)
+    # Napit pysyvat silti kaytettavissa - kayttaja paattaa itse, ainoa syy
+    # poistaa napit kaytosta on etta ajo on parhaillaan kaynnissa.
     ajo_kaynnissa = st.session_state.get("ajo_kaynnissa", False)
     klik_tarkistus = st.button(
         "Tarkista omistukset",
@@ -142,6 +144,7 @@ with ylarivi[0], st.container(border=True):
         help="Ajaa normaaliajon: etsii uusia ehdokkaita ja pisteyttaa/ostaa niita.",
     )
     loki_paikka = st.empty()
+    tila_paikka = st.empty()
 
 with ylarivi[1], st.container(border=True):
     st.subheader("Parhaat pisteet")
@@ -348,7 +351,23 @@ if klik_tarkistus or klik_normaali:
         # pysyvasti pois kaytosta eika kayttaja paasisi yrittamaan uudelleen.
         st.session_state["ajo_kaynnissa"] = False
 
+    # Paluukoodi 2 (core/orkestroija.py: DataNotReadyError) ei ole
+    # kaatuminen vaan kieltaytyminen - eri vari, eri teksti, ei runs-riviä
+    # syntynyt. tila_paikka on oma paikkansa loki_paikan ALLA samassa
+    # Hallinta-ruudussa, joten loki_paikan sisalto ei katoa kun tila
+    # kirjoitetaan - "katso loki ylla" pitaa taas paikkansa.
+    if paluukoodi == 2:
+        tila_paikka.info(
+            "Markkinadata ei ollut vielä valmis - mitään ei kirjattu. "
+            "Yritä uudestaan aamulla."
+        )
+    elif paluukoodi is not None and paluukoodi != 0:
+        tila_paikka.error(
+            f"Ajo epäonnistui (paluukoodi {paluukoodi}). Katso loki ylla."
+        )
+
     # Rerun vain onnistuneen ajon jalkeen: se pyyhkisi juuri piirretyn lokin
-    # ja virheilmoituksen, jotka epaonnistumisen jalkeen pitaa jaada nakyviin.
+    # ja tilailmoituksen, jotka epaonnistumisen/kieltaytymisen jalkeen
+    # pitaa jaada nakyviin.
     if paluukoodi == 0:
         st.rerun()

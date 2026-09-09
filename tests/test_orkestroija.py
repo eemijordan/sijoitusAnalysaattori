@@ -10,6 +10,11 @@ from core import orkestroija, tietokanta
 def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
 
+    # Data-valmiustarkistus (vaihe 2h) korvataan aina valmiiksi tassa
+    # tiedostossa - testit eivat saa riippua siita mika kellonaika on New
+    # Yorkissa kun ne sattuvat ajettavaksi.
+    monkeypatch.setattr(orkestroija, "_data_ready_now", lambda: (True, ""))
+
     tuore_iso = (datetime.now(timezone.utc) - timedelta(days=1)).strftime(
         "%Y-%m-%dT%H:%M:%S.000Z"
     )
@@ -89,6 +94,7 @@ def test_kaatuva_agentti_jattaa_ajon_keskeytyi_tilaan_ja_virhetekstin(
     tmp_path, monkeypatch
 ):
     polku = tmp_path / "testi.db"
+    monkeypatch.setattr(orkestroija, "_data_ready_now", lambda: (True, ""))
 
     class _KaatuvaAgentti:
         @staticmethod
@@ -112,8 +118,9 @@ def test_kaatuva_agentti_jattaa_ajon_keskeytyi_tilaan_ja_virhetekstin(
     assert "simuloitu agenttivirhe" in rivi["error"]
 
 
-def test_run_review_paattyy_valmis_tilaan_run_type_tarkistus(tmp_path):
+def test_run_review_paattyy_valmis_tilaan_run_type_tarkistus(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
+    monkeypatch.setattr(orkestroija, "_data_ready_now", lambda: (True, ""))
 
     # Ei avoimia positioita eika ehdokkaita -> jokainen agentti palaa
     # siististi ilman verkkokutsuja (ei tarvetta monkeypatchata mitaan).
@@ -124,8 +131,9 @@ def test_run_review_paattyy_valmis_tilaan_run_type_tarkistus(tmp_path):
     assert rivi["run_type"] == "tarkistus"
 
 
-def test_vanha_kesken_ajo_siivotaan_ennen_uutta_ajoa(tmp_path):
+def test_vanha_kesken_ajo_siivotaan_ennen_uutta_ajoa(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
+    monkeypatch.setattr(orkestroija, "_data_ready_now", lambda: (True, ""))
 
     # jaljittelee ajoa joka katkesi kesken (kone nukkui, terminaali suljettiin)
     tietokanta.init_database(polku)
@@ -157,3 +165,106 @@ def test_git_komennon_epaonnistuessa_get_git_commit_palauttaa_none(monkeypatch):
     monkeypatch.setattr(orkestroija.subprocess, "run", _epaonnistu)
 
     assert orkestroija._get_git_commit() is None
+
+
+# --- data-valmiustarkistus ennen ajoa (vaihe 2h) ---
+
+
+def _rivimaara(polku, taulu):
+    yhteys = tietokanta.open_connection(polku)
+    try:
+        return yhteys.execute(f"SELECT COUNT(*) FROM {taulu}").fetchone()[0]
+    finally:
+        yhteys.close()
+
+
+def test_data_ei_valmis_runs_taulu_pysyy_muuttumattomana(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    monkeypatch.setattr(
+        orkestroija, "_data_ready_now", lambda: (False, "markkina ei ole viela auki")
+    )
+
+    rivimaara_ennen = _rivimaara(polku, "runs")
+
+    with pytest.raises(orkestroija.DataNotReadyError):
+        orkestroija.run_normal(polku)
+
+    rivimaara_jalkeen = _rivimaara(polku, "runs")
+    assert rivimaara_ennen == 0
+    assert rivimaara_jalkeen == 0
+
+
+def test_data_ei_valmis_yhtaan_agenttia_ei_kutsuta(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    monkeypatch.setattr(
+        orkestroija, "_data_ready_now", lambda: (False, "markkina ei ole viela auki")
+    )
+
+    kutsut = []
+
+    class _Laskuri:
+        @staticmethod
+        def run(run_id, run_type, db_path):
+            kutsut.append(run_id)
+
+    monkeypatch.setattr(
+        orkestroija,
+        "_AGENTIT",
+        [
+            ("Testiagentti 1", _Laskuri),
+            ("Testiagentti 2", _Laskuri),
+        ],
+    )
+
+    with pytest.raises(orkestroija.DataNotReadyError):
+        orkestroija.run_normal(polku)
+
+    assert kutsut == []
+
+
+def test_data_valmis_ajo_etenee_normaalisti(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    monkeypatch.setattr(orkestroija, "_data_ready_now", lambda: (True, ""))
+
+    # Ei avoimia positioita eika ehdokkaita -> tarkistusajo palaa siististi
+    # ilman verkkokutsuja.
+    ajo_id = orkestroija.run_review(polku)
+
+    rivi = tietokanta.get_run(ajo_id, db_path=polku)
+    assert rivi["status"] == "valmis"
+
+
+def test_regressio_is_bar_ready_koskematon_agentti_2_keskeyttaa_yha(
+    tmp_path, monkeypatch
+):
+    # Ennakkotarkistus (is_data_ready) ei korvaa is_bar_ready():a - jos
+    # ennakkotarkistus jotenkin paastaisi ajon lapi, Agentti 2:n oma tarkka
+    # vartija keskeyttaa yha jos palkki on kesken.
+    polku = tmp_path / "testi.db"
+    monkeypatch.setattr(orkestroija, "_data_ready_now", lambda: (True, ""))
+
+    def _lisaa_ehdokas(run_id, run_type, db_path):
+        tietokanta.insert_candidate(
+            run_id=run_id,
+            run_type=run_type,
+            symbol="AAPL",
+            source="analyytikko",
+            advanced=1,
+            db_path=db_path,
+        )
+        return "1 ehdokas"
+
+    monkeypatch.setattr(trendinmetsastaja, "run", _lisaa_ehdokas)
+
+    def _kesken_oleva_palkki(symbol):
+        raise tekninen_analyytikko.IncompletePriceDataError(
+            f"{symbol}: viimeisin palkki on kuluva porssipaiva"
+        )
+
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_price_data", _kesken_oleva_palkki)
+
+    with pytest.raises(RuntimeError) as virhe:
+        orkestroija.run_normal(polku)
+
+    assert not isinstance(virhe.value, orkestroija.DataNotReadyError)
