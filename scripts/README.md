@@ -12,6 +12,17 @@ huomaamatta.
 .\scripts\aja.ps1 -Ajotyyppi molemmat  -> tarkistus ensin, sitten normaali
 ```
 
+## nakyma.ps1
+
+```
+.\scripts\nakyma.ps1  -> avaa Streamlit-nakyman selaimeen (localhost:8501)
+```
+
+Käynnistää `dashboard/nakyma.py`:n. Palvelin elää vain niin kauan kuin tämä
+terminaali-ikkuna on auki — kun ikkuna suljetaan (tai painetaan Ctrl+C),
+palvelin sammuu eikä koneelle jää mitään taustalle pyörimään. Tämä on
+tarkoituksellista, samasta syystä kuin ajastusta ei ole otettu käyttöön.
+
 ## Ajastuksen käyttöönotto myöhemmin
 
 Skripti on kirjoitettu niin, että ajastuksen lisääminen on pelkkä

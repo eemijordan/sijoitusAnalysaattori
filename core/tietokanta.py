@@ -694,6 +694,58 @@ def mark_stale_runs_interrupted(db_path=DEFAULT_DB_PATH) -> int:
         connection.close()
 
 
+def get_recent_runs(limit: int = 20, db_path=DEFAULT_DB_PATH) -> list[dict]:
+    """Palauttaa viimeisimmat ajot uusin ensin.
+
+    run_id on aikaleimapohjainen (ks. new_run_id()), joten se jarjestyy
+    aikajarjestykseen myos merkkijonovertailulla - ei tarvita erillista
+    aikaleimasaraketta jarjestykseen.
+    """
+    connection = open_connection(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT * FROM runs ORDER BY run_id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def get_best_scores(
+    days: int = 30, limit: int = 10, db_path=DEFAULT_DB_PATH
+) -> list[dict]:
+    """Palauttaa parhaiten pisteytetyt symbolit annetulta ajanjaksolta.
+
+    Yksi rivi per symboli: sen paras risk_reward_score viimeisen `days`
+    vuorokauden ajalta ja se pisteytysrivi (mm. created_at) joka sen antoi.
+    Jarjestys pisteiden mukaan laskevasti, enintaan `limit` riviä. Kaytetaan
+    dashboard/nakyma.py:ssa - pisteytyksen paivamaara kulkee mukana, koska
+    ilman sita vanha pistemaara nayttaisi valheellisesti "talla hetkella
+    parhaalta".
+    """
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    connection = open_connection(db_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT * FROM technical_scores
+            WHERE created_at >= ?
+            ORDER BY risk_reward_score DESC, created_at DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    best_by_symbol: dict[str, dict] = {}
+    for row in rows:
+        symbol = row["symbol"]
+        if symbol not in best_by_symbol:
+            best_by_symbol[symbol] = dict(row)
+
+    return list(best_by_symbol.values())[:limit]
+
+
 def get_run(run_id: str, db_path=DEFAULT_DB_PATH) -> dict | None:
     """Palauttaa yhden runs-rivin, tai None jos run_id:tä ei löydy."""
     connection = open_connection(db_path)

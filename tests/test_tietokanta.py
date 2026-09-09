@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -563,3 +563,133 @@ def test_viimeisin_pisteytys_puuttuva_symboli_palauttaa_nonen(db_polku):
     tietokanta.init_database(db_polku)
 
     assert tietokanta.get_latest_score_for_symbol("AAPL", db_path=db_polku) is None
+
+
+# --- get_recent_runs() ja get_best_scores(): vaihe 5 (dashboard) ---
+
+
+def _kaynnista_ja_paata_ajo(db_polku, run_id):
+    tietokanta.start_run(
+        run_id=run_id,
+        run_type="normaali",
+        settings_json="{}",
+        model_version="1.0",
+        db_path=db_polku,
+    )
+    tietokanta.finish_run(run_id, "valmis", db_path=db_polku)
+
+
+def test_viimeisimmat_ajot_uusin_ensin(db_polku):
+    tietokanta.init_database(db_polku)
+    for run_id in ("ajo1", "ajo2", "ajo3"):
+        _kaynnista_ja_paata_ajo(db_polku, run_id)
+
+    ajot = tietokanta.get_recent_runs(db_path=db_polku)
+
+    assert [ajo["run_id"] for ajo in ajot] == ["ajo3", "ajo2", "ajo1"]
+
+
+def test_viimeisimmat_ajot_rajaa_maaraan(db_polku):
+    tietokanta.init_database(db_polku)
+    for run_id in ("ajo1", "ajo2", "ajo3"):
+        _kaynnista_ja_paata_ajo(db_polku, run_id)
+
+    ajot = tietokanta.get_recent_runs(limit=2, db_path=db_polku)
+
+    assert [ajo["run_id"] for ajo in ajot] == ["ajo3", "ajo2"]
+
+
+def test_viimeisimmat_ajot_tyhja_kanta_palauttaa_tyhjan_listan(db_polku):
+    tietokanta.init_database(db_polku)
+
+    assert tietokanta.get_recent_runs(db_path=db_polku) == []
+
+
+def test_parhaat_pisteet_yksi_rivi_per_symboli_paras_voittaa(db_polku):
+    tietokanta.init_database(db_polku)
+    for pisteet in (5.0, 9.0, 7.0):
+        tietokanta.insert_score(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol="AAPL",
+            risk_reward_score=pisteet,
+            price=100.0,
+            db_path=db_polku,
+        )
+
+    parhaat = tietokanta.get_best_scores(db_path=db_polku)
+
+    assert len(parhaat) == 1
+    assert parhaat[0]["symbol"] == "AAPL"
+    assert parhaat[0]["risk_reward_score"] == 9.0
+
+
+def test_parhaat_pisteet_jattaa_pois_ikkunaa_vanhemmat(db_polku):
+    tietokanta.init_database(db_polku)
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        vanha = (datetime.now() - timedelta(days=40)).isoformat(timespec="seconds")
+        yhteys.execute(
+            """
+            INSERT INTO technical_scores (
+                run_id, run_type, symbol, risk_reward_score, price, created_at
+            ) VALUES ('vanha_ajo', 'normaali', 'OLD', 9.0, 100.0, ?)
+            """,
+            (vanha,),
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="NEW",
+        risk_reward_score=5.0,
+        price=50.0,
+        db_path=db_polku,
+    )
+
+    parhaat = tietokanta.get_best_scores(days=30, db_path=db_polku)
+
+    symbolit = {p["symbol"] for p in parhaat}
+    assert "OLD" not in symbolit
+    assert "NEW" in symbolit
+
+
+def test_parhaat_pisteet_rajaa_ja_jarjestaa(db_polku):
+    tietokanta.init_database(db_polku)
+    for symboli, pisteet in (("A", 5.0), ("B", 9.0), ("C", 7.0), ("D", 3.0)):
+        tietokanta.insert_score(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol=symboli,
+            risk_reward_score=pisteet,
+            price=100.0,
+            db_path=db_polku,
+        )
+
+    parhaat = tietokanta.get_best_scores(limit=3, db_path=db_polku)
+
+    assert [p["symbol"] for p in parhaat] == ["B", "C", "A"]
+
+
+def test_parhaat_pisteet_sisaltaa_pisteytyksen_paivamaaran(db_polku):
+    tietokanta.init_database(db_polku)
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=8.0,
+        price=100.0,
+        db_path=db_polku,
+    )
+
+    parhaat = tietokanta.get_best_scores(db_path=db_polku)
+
+    assert parhaat[0]["created_at"] is not None
+
+
+def test_parhaat_pisteet_tyhja_kanta_palauttaa_tyhjan_listan(db_polku):
+    tietokanta.init_database(db_polku)
+
+    assert tietokanta.get_best_scores(db_path=db_polku) == []
