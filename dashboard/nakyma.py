@@ -42,6 +42,28 @@ def _turvallinen_haku(funktio, *args, **kwargs):
         return None, f"Tietokanta on varattu, ajo kesken ({virhe})."
 
 
+def _tyhjat_viivoiksi(df: pd.DataFrame) -> pd.DataFrame:
+    """Korvaa tyhjät arvot ajatusviivalla näyttöä varten.
+
+    pandas näyttää tietokannan NULL-arvot muodossa None tai NaN, mikä on
+    Pythonin sisäistä sanastoa eikä kuulu käyttöliittymään. Palauttaa aina
+    kopion - alkuperäinen DataFrame ei muutu, jotta sama taulukko ei näytä
+    eri asiaa siitä riippuen missä järjestyksessä sitä käsitellään.
+
+    Käsittelee vain sarakkeet joissa on oikeasti tyhjiä arvoja: koskematon
+    sarake pysyy numeerisena ja lajittuu oikein (10 > 9), eikä pelkkä nolla,
+    tyhjä merkkijono tai False muutu viivaksi - ne ovat oikeita arvoja,
+    pd.isna() ei tunnista niitä tyhjiksi. Sarake jossa on jo yksikin tyhjä
+    arvo muuttuu joka tapauksessa sekamuotoiseksi heti kun NULL korvataan
+    viivalla, joten lajittelun kannalta ei ole mitään menetettävää.
+    """
+    df = df.copy()
+    for sarake in df.columns:
+        if df[sarake].isna().any():
+            df[sarake] = df[sarake].apply(lambda arvo: "-" if pd.isna(arvo) else arvo)
+    return df
+
+
 def _porssi_on_auki(nyt_ny: datetime) -> bool:
     """Karkea arvio: US-porssi auki ma-pe klo 9:30-16:00 New Yorkin aikaa.
 
@@ -141,7 +163,7 @@ with ylarivi[1], st.container(border=True):
                 "omistus": "Omistus",
             }
         )
-        st.dataframe(df, hide_index=True, use_container_width=True)
+        st.dataframe(_tyhjat_viivoiksi(df), hide_index=True, width="stretch")
 
 with ylarivi[2], st.container(border=True):
     st.subheader("Omistukset")
@@ -172,7 +194,7 @@ with ylarivi[2], st.container(border=True):
                 "buy_date": "Ostettu",
             }
         )
-        st.dataframe(df, hide_index=True, use_container_width=True)
+        st.dataframe(_tyhjat_viivoiksi(df), hide_index=True, width="stretch")
 
 st.divider()
 st.subheader("Valitun ajon tulokset")
@@ -197,29 +219,56 @@ else:
     alarivi = st.columns([1, 1, 1.4])
 
     with alarivi[0], st.container(border=True):
-        st.markdown("**Agentti 1 – ehdokkaat**")
+        # Tarkistusajossa Agentti 1 ei pisteyta eika jarjesta ehdokkaita -
+        # se listaa omistetut positiot Agentti 2:lle hinnoiteltavaksi, ei
+        # etsi uusia ostettavia. score/rank ovat silloin NULL taysin
+        # oikeutetusti, ja "advanced" olisi aina Kylla (kaikki omistetut
+        # positiot menevat maaritelmallisesti jatkoon) - kolme saraketta
+        # joista ei saisi mitaan tietoa. run_type on tiedossa etukateen
+        # alasvetovalikosta, joten ratkaisu perustuu siihen eika siihen
+        # sattuvatko sarakkeet olemaan tyhjia talla kertaa.
+        tarkistusajo = valittu_ajo["run_type"] == "tarkistus"
+        st.markdown(
+            "**Agentti 1 – tarkistettavat positiot**"
+            if tarkistusajo
+            else "**Agentti 1 – ehdokkaat**"
+        )
         ehdokkaat, virhe = _turvallinen_haku(
             tietokanta.get_candidates, run_id, advanced_only=False
         )
         if virhe:
             st.info(virhe)
         elif not ehdokkaat:
-            st.caption("Ei ehdokkaita tällä ajolla.")
-        else:
-            df = pd.DataFrame(ehdokkaat)[
-                ["symbol", "source", "score", "rank", "advanced"]
-            ]
-            df["advanced"] = df["advanced"].apply(lambda a: "Kyllä" if a else "Ei")
-            df = df.rename(
-                columns={
-                    "symbol": "Symboli",
-                    "source": "Lähde",
-                    "score": "Pisteet",
-                    "rank": "Sijoitus",
-                    "advanced": "Jatkoon",
-                }
+            st.caption(
+                "Ei tarkistettavia positioita tällä ajolla."
+                if tarkistusajo
+                else "Ei ehdokkaita tällä ajolla."
             )
-            st.dataframe(df, hide_index=True, use_container_width=True)
+        else:
+            if tarkistusajo:
+                df = pd.DataFrame(ehdokkaat)[["symbol", "source", "reason"]]
+                df = df.rename(
+                    columns={
+                        "symbol": "Symboli",
+                        "source": "Lähde",
+                        "reason": "Peruste",
+                    }
+                )
+            else:
+                df = pd.DataFrame(ehdokkaat)[
+                    ["symbol", "source", "score", "rank", "advanced"]
+                ]
+                df["advanced"] = df["advanced"].apply(lambda a: "Kyllä" if a else "Ei")
+                df = df.rename(
+                    columns={
+                        "symbol": "Symboli",
+                        "source": "Lähde",
+                        "score": "Pisteet",
+                        "rank": "Sijoitus",
+                        "advanced": "Jatkoon",
+                    }
+                )
+            st.dataframe(_tyhjat_viivoiksi(df), hide_index=True, width="stretch")
 
     with alarivi[1], st.container(border=True):
         st.markdown("**Agentti 2 – pisteytykset**")
@@ -249,7 +298,7 @@ else:
                     "rr_ratio": "RR-suhde",
                 }
             )
-            st.dataframe(df, hide_index=True, use_container_width=True)
+            st.dataframe(_tyhjat_viivoiksi(df), hide_index=True, width="stretch")
 
     with alarivi[2], st.container(border=True):
         st.markdown("**Agentti 3 – päätökset ja salkun tilanne**")
@@ -267,7 +316,7 @@ else:
                     "rationale": "Perustelu",
                 }
             )
-            st.dataframe(df, hide_index=True, use_container_width=True)
+            st.dataframe(_tyhjat_viivoiksi(df), hide_index=True, width="stretch")
 
         st.divider()
         kateinen, virhe_kateinen = _turvallinen_haku(tietokanta.get_cash)
