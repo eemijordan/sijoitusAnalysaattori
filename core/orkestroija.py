@@ -51,7 +51,9 @@ def _run_agents(run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     """
     run_id = tietokanta.new_run_id()
 
-    tietokanta.init_database(db_path)
+    added_columns = tietokanta.init_database(db_path)
+    if added_columns:
+        _loki.info(f"Kanta paivitetty: lisatty sarakkeet {', '.join(added_columns)}")
 
     # Ennen start_run():ia, ei sen jalkeen - toisin pain tama merkitsisi juuri
     # alkaneen ajon keskeytyneeksi. Siivoaa ajot jotka jaivat tilaan 'kesken'

@@ -130,31 +130,92 @@ def open_connection(db_path=DEFAULT_DB_PATH):
     return connection
 
 
-def _ensure_column(connection, table: str, column: str, column_type: str) -> None:
-    """Lisää sarakkeen tauluun jos se puuttuu (kevyt migraatio).
+def _schema_columns() -> dict[str, list[sqlite3.Row]]:
+    """Palauttaa skeeman taulut ja sarakkeet suoraan SQLiteltä luettuna.
 
-    SQLite ei tue "ADD COLUMN IF NOT EXISTS" -syntaksia, joten olemassaolo
-    tarkistetaan PRAGMA table_info:lla ennen ALTER TABLE:a. Ilman tätä
-    CREATE TABLE IF NOT EXISTS ei koskaan lisäisi uutta saraketta jo
-    olemassa olevaan tuotantokantaan - se vain ohitetaan hiljaa koska
-    taulu on jo olemassa.
+    SCHEMA ajetaan muistinvaraiseen kantaan ja tulos luetaan PRAGMA:lla,
+    jotta jäsentäminen ei ole kiinni merkkijonon muotoilusta (sisennys,
+    rivinvaihdot, monirivinen CHECK-ehto) niin kuin regexillä olisi.
+    PRAGMA table_info antaa jokaisesta sarakkeesta nimen, tyypin,
+    notnull-lipun, oletusarvon ja pk-lipun - juuri sen mitä migraatio
+    tarvitsee.
     """
-    existing = {
-        row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
-    }
-    if column not in existing:
-        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+    temp = sqlite3.connect(":memory:")
+    temp.row_factory = sqlite3.Row
+    try:
+        temp.executescript(SCHEMA)
+        tables = [
+            row["name"]
+            for row in temp.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        ]
+        return {
+            table: list(temp.execute(f"PRAGMA table_info({table})")) for table in tables
+        }
+    finally:
+        temp.close()
 
 
-def init_database(db_path=DEFAULT_DB_PATH):
-    """Luo skeeman jos puuttuu ja alustaa portfolio-rivin INITIAL_CAPITALiin.
+def _migrate_missing_columns(connection) -> list[str]:
+    """Lisää kantaan sarakkeet jotka ovat skeemassa mutta puuttuvat taulusta.
 
-    Turvallinen ajaa useaan kertaan samaan kantaan.
+    Vertaa _schema_columns():n (SQLiten oma jäsennys) tulosta elävän kannan
+    PRAGMA table_info:iin taulu kerrallaan ja lisää puuttuvat ALTER TABLE
+    ... ADD COLUMN:lla. Palauttaa lisättyjen sarakkeiden nimet muodossa
+    "taulu.sarake" - tyhjä lista jos kanta oli jo ajan tasalla. Ei koskaan
+    poista mitään: elävässä kannassa olevaa ylimääräistä saraketta ei
+    kosketa, eikä puuttuvaa taulua luoda tässä (sen hoitaa executescript).
+
+    SQLite ei osaa lisätä NOT NULL- tai PRIMARY KEY -saraketta ilman
+    oletusarvoa olemassa olevaan tauluun. Tällaista saraketta ei ohiteta
+    hiljaa - se palauttaisi täsmälleen sen ongelman jota tämä funktio
+    korjaa - vaan nostetaan RuntimeError joka kertoo mitä tehdä (ks.
+    CLAUDE.md: uudet sarakkeet nullable tai oletusarvolla).
+    """
+    added: list[str] = []
+    for table, schema_columns in _schema_columns().items():
+        existing = {
+            row["name"]: row
+            for row in connection.execute(f"PRAGMA table_info({table})")
+        }
+        for column in schema_columns:
+            name = column["name"]
+            if name in existing:
+                continue
+
+            if column["pk"] or (column["notnull"] and column["dflt_value"] is None):
+                kind = "PRIMARY KEY" if column["pk"] else "NOT NULL ilman oletusarvoa"
+                raise RuntimeError(
+                    f"sarake {table}.{name} on {kind} eika sita voi lisata "
+                    f"ALTER TABLE:lla olemassa olevaan tauluun - lisaa "
+                    f"DEFAULT tai kirjoita migraatio kasin"
+                )
+
+            ddl = f"ALTER TABLE {table} ADD COLUMN {name} {column['type'] or 'TEXT'}"
+            if column["dflt_value"] is not None:
+                ddl += f" DEFAULT {column['dflt_value']}"
+            if column["notnull"]:
+                ddl += " NOT NULL"
+            connection.execute(ddl)
+            added.append(f"{table}.{name}")
+
+    return added
+
+
+def init_database(db_path=DEFAULT_DB_PATH) -> list[str]:
+    """Luo skeeman jos puuttuu, migratoi puuttuvat sarakkeet ja alustaa portfolio-rivin.
+
+    Turvallinen ajaa useaan kertaan samaan kantaan. Palauttaa lisättyjen
+    sarakkeiden listan (ks. _migrate_missing_columns) - tyhjä jos kanta oli
+    jo ajan tasalla. core/tietokanta.py ei itse lokita mitään, joten
+    kutsuja (core/orkestroija.py) lokittaa tämän jos lista ei ole tyhjä.
     """
     connection = open_connection(db_path)
     try:
         connection.executescript(SCHEMA)
-        _ensure_column(connection, "portfolio_snapshots", "holdings_return_pct", "REAL")
+        added_columns = _migrate_missing_columns(connection)
 
         row_count = connection.execute("SELECT COUNT(*) FROM portfolio").fetchone()[0]
         if row_count == 0:
@@ -170,6 +231,7 @@ def init_database(db_path=DEFAULT_DB_PATH):
                 ),
             )
         connection.commit()
+        return added_columns
     finally:
         connection.close()
 

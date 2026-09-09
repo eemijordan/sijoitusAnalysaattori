@@ -573,8 +573,8 @@ def test_holdings_return_pct_none_tallentuu_ja_luetaan_takaisin(db_polku):
 def test_init_database_lisaa_holdings_return_pct_vanhaan_kantaan(db_polku):
     # Jaljittelee tuotantokantaa joka luotiin ennen vaihe 4a jatkoa: taulu on
     # jo olemassa ilman uutta saraketta. CREATE TABLE IF NOT EXISTS ei
-    # koskaan lisaisi saraketta talleiseen tauluun - _ensure_column():n
-    # pitaa tehda se ALTER TABLE:lla.
+    # koskaan lisaisi saraketta talleiseen tauluun - _migrate_missing_
+    # columns():n (vaihe D2) pitaa tehda se ALTER TABLE:lla.
     yhteys = tietokanta.open_connection(db_polku)
     try:
         yhteys.execute(
@@ -610,6 +610,240 @@ def test_init_database_lisaa_holdings_return_pct_vanhaan_kantaan(db_polku):
 
     rivit = tietokanta.get_snapshots(db_path=db_polku)
     assert rivit[0]["holdings_return_pct"] == 1.5
+
+
+# --- _schema_columns() / _migrate_missing_columns(): vaihe D2 ---
+
+
+def test_schema_columns_palauttaa_kaikki_taulut_ja_sarakemaarat():
+    sarakkeet = tietokanta._schema_columns()
+
+    assert set(sarakkeet.keys()) == ODOTETUT_TAULUT
+    assert len(sarakkeet["portfolio"]) == 5
+    assert len(sarakkeet["portfolio_snapshots"]) == 10
+
+
+def test_migraatio_lisaa_puuttuvan_sarakkeen_ja_palauttaa_sen_nimen(db_polku):
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            """
+            CREATE TABLE portfolio_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                snapshot_date TEXT NOT NULL,
+                cash REAL NOT NULL,
+                positions_value REAL NOT NULL,
+                total_value REAL NOT NULL,
+                benchmark_symbol TEXT,
+                benchmark_price REAL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    lisatyt = tietokanta.init_database(db_polku)
+
+    assert lisatyt == ["portfolio_snapshots.holdings_return_pct"]
+
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        sarakkeet = {
+            r["name"] for r in yhteys.execute("PRAGMA table_info(portfolio_snapshots)")
+        }
+    finally:
+        yhteys.close()
+    assert "holdings_return_pct" in sarakkeet
+
+
+def test_migraatio_sailyttaa_datan_uusi_sarake_nullina(db_polku):
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            """
+            CREATE TABLE portfolio_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                snapshot_date TEXT NOT NULL,
+                cash REAL NOT NULL,
+                positions_value REAL NOT NULL,
+                total_value REAL NOT NULL,
+                benchmark_symbol TEXT,
+                benchmark_price REAL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        yhteys.execute(
+            """
+            INSERT INTO portfolio_snapshots (
+                run_id, snapshot_date, cash, positions_value, total_value,
+                created_at
+            ) VALUES ('ajo1', '2026-09-01', 10000, 0, 10000, '2026-09-01T00:00:00')
+            """
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    tietokanta.init_database(db_polku)
+
+    rivit = tietokanta.get_snapshots(db_path=db_polku)
+    assert len(rivit) == 1
+    assert rivit[0]["run_id"] == "ajo1"
+    assert rivit[0]["total_value"] == 10000
+    assert rivit[0]["holdings_return_pct"] is None
+
+
+def test_migraatio_useita_puuttuvia_sarakkeita_eri_tauluissa(db_polku):
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            """
+            CREATE TABLE portfolio_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                snapshot_date TEXT NOT NULL,
+                cash REAL NOT NULL,
+                positions_value REAL NOT NULL,
+                total_value REAL NOT NULL,
+                benchmark_symbol TEXT,
+                benchmark_price REAL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        yhteys.execute(
+            """
+            CREATE TABLE positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('aktiivinen', 'suljettu')),
+                buy_price REAL NOT NULL,
+                quantity REAL NOT NULL,
+                stake_usd REAL NOT NULL,
+                stop_loss REAL,
+                target_price REAL,
+                buy_date TEXT NOT NULL,
+                buy_run_id TEXT NOT NULL,
+                sell_price REAL,
+                sell_date TEXT,
+                sell_run_id TEXT,
+                pnl_usd REAL,
+                pnl_pct REAL
+            )
+            """
+        )  # last_checked puuttuu
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    lisatyt = tietokanta.init_database(db_polku)
+
+    assert set(lisatyt) == {
+        "portfolio_snapshots.holdings_return_pct",
+        "positions.last_checked",
+    }
+
+
+def test_migraatio_ajantasainen_kanta_ei_lisaa_mitaan(db_polku):
+    tietokanta.init_database(db_polku)  # ensimmainen ajo luo taydellisen skeeman
+
+    lisatyt = tietokanta.init_database(db_polku)  # toinen ajo, ei mitaan puuttuvaa
+
+    assert lisatyt == []
+
+
+def test_migraatio_on_toistettavissa(db_polku):
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            """
+            CREATE TABLE portfolio_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                snapshot_date TEXT NOT NULL,
+                cash REAL NOT NULL,
+                positions_value REAL NOT NULL,
+                total_value REAL NOT NULL,
+                benchmark_symbol TEXT,
+                benchmark_price REAL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    ensimmainen = tietokanta.init_database(db_polku)
+    toinen = tietokanta.init_database(db_polku)
+
+    assert ensimmainen == ["portfolio_snapshots.holdings_return_pct"]
+    assert toinen == []
+
+
+def test_migraatio_not_null_ilman_oletusarvoa_kaataa_aanekkaasti(monkeypatch, db_polku):
+    # Kayttaa omaa testiskeemaa - oikeaa SCHEMA:a ei muuteta.
+    testiskeema = """
+    CREATE TABLE IF NOT EXISTS testitaulu (
+        id INTEGER PRIMARY KEY,
+        pakollinen TEXT NOT NULL
+    );
+    """
+    monkeypatch.setattr(tietokanta, "SCHEMA", testiskeema)
+
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute("CREATE TABLE testitaulu (id INTEGER PRIMARY KEY)")
+        yhteys.commit()
+
+        with pytest.raises(RuntimeError) as virhe:
+            tietokanta._migrate_missing_columns(yhteys)
+    finally:
+        yhteys.close()
+
+    assert "testitaulu.pakollinen" in str(virhe.value)
+    assert "NOT NULL ilman oletusarvoa" in str(virhe.value)
+
+
+def test_migraatio_ei_poista_ylimaaraista_saraketta(db_polku):
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            """
+            CREATE TABLE portfolio_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                snapshot_date TEXT NOT NULL,
+                cash REAL NOT NULL,
+                positions_value REAL NOT NULL,
+                total_value REAL NOT NULL,
+                benchmark_symbol TEXT,
+                benchmark_price REAL,
+                holdings_return_pct REAL,
+                created_at TEXT NOT NULL,
+                kokeilu TEXT
+            )
+            """
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    tietokanta.init_database(db_polku)
+
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        sarakkeet = {
+            r["name"] for r in yhteys.execute("PRAGMA table_info(portfolio_snapshots)")
+        }
+    finally:
+        yhteys.close()
+    assert "kokeilu" in sarakkeet
 
 
 def test_viimeisin_pisteytys_symbolille_palauttaa_uusimman_yli_ajojen(db_polku):
