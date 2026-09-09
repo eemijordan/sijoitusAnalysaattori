@@ -5,3 +5,4 @@ __pycache__/
 data/*
 !data/arkisto/
 .pytest_cache/
+Claude outputs/
