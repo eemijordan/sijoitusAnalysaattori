@@ -1,3 +1,5 @@
+import pytest
+
 from agents import raportoija
 from core import tietokanta
 from core.asetukset import BENCHMARK_SYMBOL
@@ -103,8 +105,12 @@ def test_positio_ilman_yhtaan_pisteytysta_kayttaa_ostohintaa_ja_lasketaan_yhteen
 
     rivit = tietokanta.get_snapshots(db_path=polku)
     assert rivit[0]["positions_value"] == 1000.0  # 10 * buy_price 100
+    # ostohinnalla arvostettu positio "tuottaa" luonnostaan 0 %, mika vetaa
+    # painotettua keskiarvoa kohti nollaa.
+    assert rivit[0]["holdings_return_pct"] == pytest.approx(0.0)
 
     assert any("1" in v and "vanhalla tai ostohinnalla" in v for v in viestit)
+    assert any("osakkeet" in v and "arvostettu ostohinnalla" in v for v in viestit)
 
 
 def test_nolla_avointa_positiota_tilannekuva_on_pelkkaa_kateista(tmp_path):
@@ -212,12 +218,199 @@ def test_lahtotilannekuva_ilman_vertailukurssia_ohitetaan(tmp_path, monkeypatch)
     assert "+2.00 %" in viesti
 
 
+# --- holdings_return_pct: vaihe 4a jatko (positioiden oma tuotto) ---
+
+
+def test_holdings_return_painotetaan_stake_usd_lla(tmp_path):
+    # Todistaa etta painotus tehdaan: painottamaton keskiarvo (10 + -5) / 2
+    # olisi +2.5 %, mutta oikea (stake_usd-painotettu) tulos on -1.25 %.
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="A",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        db_path=polku,
+    )  # nyt 110 -> +10 %
+    tietokanta.open_position(
+        symbol="B",
+        buy_price=200.0,
+        stake_usd=3000.0,
+        buy_run_id="ajo0",
+        db_path=polku,
+    )  # nyt 190 -> -5 %
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="tarkistus",
+        symbol="A",
+        risk_reward_score=8.0,
+        price=110.0,
+        db_path=polku,
+    )
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="tarkistus",
+        symbol="B",
+        risk_reward_score=8.0,
+        price=190.0,
+        db_path=polku,
+    )
+
+    raportoija.run("ajo1", "tarkistus", db_path=polku)
+
+    rivit = tietokanta.get_snapshots(db_path=polku)
+    assert rivit[0]["holdings_return_pct"] == pytest.approx(-1.25)
+
+
+def test_holdings_return_samalla_panoksella_on_tavallinen_keskiarvo(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.open_position(
+        symbol="A",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        db_path=polku,
+    )  # +10 %
+    tietokanta.open_position(
+        symbol="B",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        db_path=polku,
+    )  # -10 %
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="tarkistus",
+        symbol="A",
+        risk_reward_score=8.0,
+        price=110.0,
+        db_path=polku,
+    )
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="tarkistus",
+        symbol="B",
+        risk_reward_score=8.0,
+        price=90.0,
+        db_path=polku,
+    )
+
+    raportoija.run("ajo1", "tarkistus", db_path=polku)
+
+    rivit = tietokanta.get_snapshots(db_path=polku)
+    assert rivit[0]["holdings_return_pct"] == pytest.approx(0.0)
+
+
+def test_holdings_return_ei_avoimia_positioita_on_none_ei_nolla(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    raportoija.run("ajo1", "tarkistus", db_path=polku)
+
+    rivit = tietokanta.get_snapshots(db_path=polku)
+    assert rivit[0]["holdings_return_pct"] is None
+
+
+def test_osakkeet_rivi_nakyy_lokissa_vertailulla(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    viestit = _kirjaa_viestit(monkeypatch)
+
+    tietokanta.insert_snapshot(
+        run_id="ajo1",
+        snapshot_date="2026-09-01",
+        cash=10000.0,
+        positions_value=0.0,
+        total_value=10000.0,
+        benchmark_symbol=BENCHMARK_SYMBOL,
+        benchmark_price=500.0,
+        db_path=polku,
+    )
+
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        db_path=polku,
+    )
+    tietokanta.insert_score(
+        run_id="ajo2",
+        run_type="tarkistus",
+        symbol="AAPL",
+        risk_reward_score=8.0,
+        price=98.4,
+        db_path=polku,
+    )  # -1.6 %
+    tietokanta.insert_market_reference(
+        run_id="ajo2", symbol=BENCHMARK_SYMBOL, price=497.25, db_path=polku
+    )  # -0.55 %
+
+    raportoija.run("ajo2", "tarkistus", db_path=polku)
+
+    osakkeet_viesti = next(v for v in viestit if v.startswith("Ajo ajo2: osakkeet"))
+    assert "-1.60 %" in osakkeet_viesti
+    assert "SPY -0.55 %" in osakkeet_viesti
+    assert "(eri pitoajat, suuntaa-antava)" in osakkeet_viesti
+
+
+def test_osakkeet_rivi_puuttuu_kun_ei_avoimia_positioita(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    viestit = _kirjaa_viestit(monkeypatch)
+
+    raportoija.run("ajo1", "tarkistus", db_path=polku)
+
+    assert not any(v.startswith("Ajo ajo1: osakkeet") for v in viestit)
+
+
+# --- regressio: rivi 1 (salkun kokonaistuotto) muoto pysyy ennallaan ---
+
+
+def test_regressio_salkkurivin_muoto_ennallaan(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    viestit = _kirjaa_viestit(monkeypatch)
+
+    tietokanta.insert_snapshot(
+        run_id="ajo1",
+        snapshot_date="2026-09-01",
+        cash=10000.0,
+        positions_value=0.0,
+        total_value=10000.0,
+        benchmark_symbol=BENCHMARK_SYMBOL,
+        benchmark_price=500.0,
+        db_path=polku,
+    )
+    tietokanta.adjust_cash(-32.0, db_path=polku)  # kateinen 9968.0, ei positioita
+    tietokanta.insert_market_reference(
+        run_id="ajo2", symbol=BENCHMARK_SYMBOL, price=497.25, db_path=polku
+    )
+
+    raportoija.run("ajo2", "tarkistus", db_path=polku)
+
+    salkku_viesti = next(v for v in viestit if v.startswith("Ajo ajo2: salkku"))
+    assert salkku_viesti == (
+        "Ajo ajo2: salkku 9 968.00 USD (kateinen 9 968.00 + positiot 0.00) "
+        "| tuotto -0.32 % | SPY -0.55 % | ero +0.23 %-yks"
+    )
+
+
 # --- regressio: normaaliajo ei muutu ---
 
 
-def test_normaaliajo_yhteenveto_ennallaan_eika_tilannekuvaa_synny(tmp_path):
+def test_normaaliajo_yhteenveto_ennallaan_eika_tilannekuvaa_synny(
+    tmp_path, monkeypatch
+):
     polku = tmp_path / "testi.db"
     tietokanta.init_database(polku)
+    viestit = _kirjaa_viestit(monkeypatch)
 
     tietokanta.insert_candidate(
         run_id="ajo1",
@@ -247,3 +440,4 @@ def test_normaaliajo_yhteenveto_ennallaan_eika_tilannekuvaa_synny(tmp_path):
 
     assert summary == "ajo ajo1 (normaali): 1 ehdokasta, 1 pisteytysta, 1 paatosta"
     assert tietokanta.get_snapshots(db_path=polku) == []
+    assert not any("osakkeet" in v for v in viestit)

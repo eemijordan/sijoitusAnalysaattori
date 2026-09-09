@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     total_value REAL NOT NULL,
     benchmark_symbol TEXT,
     benchmark_price REAL,
+    holdings_return_pct REAL,
     created_at TEXT NOT NULL
 );
 """
@@ -129,6 +130,22 @@ def open_connection(db_path=DEFAULT_DB_PATH):
     return connection
 
 
+def _ensure_column(connection, table: str, column: str, column_type: str) -> None:
+    """Lisää sarakkeen tauluun jos se puuttuu (kevyt migraatio).
+
+    SQLite ei tue "ADD COLUMN IF NOT EXISTS" -syntaksia, joten olemassaolo
+    tarkistetaan PRAGMA table_info:lla ennen ALTER TABLE:a. Ilman tätä
+    CREATE TABLE IF NOT EXISTS ei koskaan lisäisi uutta saraketta jo
+    olemassa olevaan tuotantokantaan - se vain ohitetaan hiljaa koska
+    taulu on jo olemassa.
+    """
+    existing = {
+        row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
+    }
+    if column not in existing:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+
 def init_database(db_path=DEFAULT_DB_PATH):
     """Luo skeeman jos puuttuu ja alustaa portfolio-rivin INITIAL_CAPITALiin.
 
@@ -137,6 +154,7 @@ def init_database(db_path=DEFAULT_DB_PATH):
     connection = open_connection(db_path)
     try:
         connection.executescript(SCHEMA)
+        _ensure_column(connection, "portfolio_snapshots", "holdings_return_pct", "REAL")
 
         row_count = connection.execute("SELECT COUNT(*) FROM portfolio").fetchone()[0]
         if row_count == 0:
@@ -813,13 +831,16 @@ def insert_snapshot(
     total_value: float,
     benchmark_symbol: str | None = None,
     benchmark_price: float | None = None,
+    holdings_return_pct: float | None = None,
     db_path=DEFAULT_DB_PATH,
 ) -> int:
     """Lisää rivin portfolio_snapshots-tauluun ja palauttaa sen id:n.
 
     benchmark_price on nullable tarkoituksella: jos vertailuhaku epaonnistui,
     salkun arvo pitaa tallentaa silti - mittausta ei saa menettaa siksi ettei
-    vertailukohta vastannut.
+    vertailukohta vastannut. holdings_return_pct on nullable samasta syystä
+    kuin nolla avointa positiota: None, ei 0 - nolla nayttaisi tasaiselta
+    tuotolta, mika olisi valhe (ks. agents/raportoija.py).
     """
     connection = open_connection(db_path)
     try:
@@ -827,8 +848,8 @@ def insert_snapshot(
             """
             INSERT INTO portfolio_snapshots (
                 run_id, snapshot_date, cash, positions_value, total_value,
-                benchmark_symbol, benchmark_price, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                benchmark_symbol, benchmark_price, holdings_return_pct, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -838,6 +859,7 @@ def insert_snapshot(
                 total_value,
                 benchmark_symbol,
                 benchmark_price,
+                holdings_return_pct,
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )

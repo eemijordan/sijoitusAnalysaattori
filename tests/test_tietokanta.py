@@ -534,6 +534,84 @@ def test_tilannekuva_ilman_vertailukurssia_tallentaa_nonen(db_polku):
     assert rivit[0]["benchmark_price"] is None
 
 
+# --- holdings_return_pct: vaihe 4a jatko ---
+
+
+def test_holdings_return_pct_tallentuu_ja_luetaan_takaisin(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_snapshot(
+        run_id="ajo1",
+        snapshot_date="2026-09-01",
+        cash=8000.0,
+        positions_value=2000.0,
+        total_value=10000.0,
+        holdings_return_pct=-1.6,
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_snapshots(db_path=db_polku)
+    assert rivit[0]["holdings_return_pct"] == -1.6
+
+
+def test_holdings_return_pct_none_tallentuu_ja_luetaan_takaisin(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_snapshot(
+        run_id="ajo1",
+        snapshot_date="2026-09-01",
+        cash=10000.0,
+        positions_value=0.0,
+        total_value=10000.0,
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_snapshots(db_path=db_polku)
+    assert rivit[0]["holdings_return_pct"] is None
+
+
+def test_init_database_lisaa_holdings_return_pct_vanhaan_kantaan(db_polku):
+    # Jaljittelee tuotantokantaa joka luotiin ennen vaihe 4a jatkoa: taulu on
+    # jo olemassa ilman uutta saraketta. CREATE TABLE IF NOT EXISTS ei
+    # koskaan lisaisi saraketta talleiseen tauluun - _ensure_column():n
+    # pitaa tehda se ALTER TABLE:lla.
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            """
+            CREATE TABLE portfolio_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                snapshot_date TEXT NOT NULL,
+                cash REAL NOT NULL,
+                positions_value REAL NOT NULL,
+                total_value REAL NOT NULL,
+                benchmark_symbol TEXT,
+                benchmark_price REAL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_snapshot(
+        run_id="ajo1",
+        snapshot_date="2026-09-01",
+        cash=10000.0,
+        positions_value=0.0,
+        total_value=10000.0,
+        holdings_return_pct=1.5,
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_snapshots(db_path=db_polku)
+    assert rivit[0]["holdings_return_pct"] == 1.5
+
+
 def test_viimeisin_pisteytys_symbolille_palauttaa_uusimman_yli_ajojen(db_polku):
     tietokanta.init_database(db_polku)
 
