@@ -132,13 +132,13 @@ with ylarivi[0], st.container(border=True):
     klik_tarkistus = st.button(
         "Tarkista omistukset",
         disabled=ajo_kaynnissa,
-        use_container_width=True,
+        width="stretch",
         help="Ajaa tarkistusajon: kayr avoimet positiot lapi ja paattaa pito/myynti.",
     )
     klik_normaali = st.button(
         "Tee täysi skannaus markkinoille",
         disabled=ajo_kaynnissa,
-        use_container_width=True,
+        width="stretch",
         help="Ajaa normaaliajon: etsii uusia ehdokkaita ja pisteyttaa/ostaa niita.",
     )
     loki_paikka = st.empty()
