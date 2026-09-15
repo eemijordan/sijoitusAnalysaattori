@@ -101,7 +101,7 @@ päätökset ovat testattavissa ilman verkkoa ja tietokantaa.
 ## Testit
 
 ```bash
-pytest                      # 252 testiä
+pytest                      # yli 250 testiä
 ruff check .
 ruff format --check .
 ```
