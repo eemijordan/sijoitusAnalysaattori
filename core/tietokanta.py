@@ -119,6 +119,15 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     holdings_return_pct REAL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS skipped_symbols (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -937,6 +946,53 @@ def get_snapshots(db_path=DEFAULT_DB_PATH) -> list[dict]:
     try:
         rows = connection.execute(
             "SELECT * FROM portfolio_snapshots ORDER BY id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def insert_skip(
+    run_id: str,
+    symbol: str,
+    stage: str,
+    reason: str,
+    db_path=DEFAULT_DB_PATH,
+) -> int:
+    """Lisää rivin skipped_symbols-tauluun ja palauttaa sen id:n.
+
+    Kirjaa miksi symboli putosi kasittelysta ennen pisteytysta (ks.
+    agents/tekninen_analyytikko.py). stage ja reason ovat molemmat NOT NULL -
+    ohitus jota ei osata perustella on itsessaan vika.
+    """
+    connection = open_connection(db_path)
+    try:
+        cursor = connection.execute(
+            """
+            INSERT INTO skipped_symbols (run_id, symbol, stage, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                symbol,
+                stage,
+                reason,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        connection.commit()
+        return cursor.lastrowid
+    finally:
+        connection.close()
+
+
+def get_skips(run_id: str, db_path=DEFAULT_DB_PATH) -> list[dict]:
+    """Palauttaa ajon kaikki ohitetut symbolit."""
+    connection = open_connection(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT * FROM skipped_symbols WHERE run_id = ? ORDER BY id",
+            (run_id,),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:

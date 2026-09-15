@@ -872,6 +872,242 @@ def test_aja_normaali_ei_hae_vertailukurssia(tmp_path, monkeypatch):
     assert tietokanta.get_market_reference("ajo1", "SPY", db_path=polku) is None
 
 
+def test_aja_kirjaa_ohituksen_kun_hintadata_puuttuu_ja_jatkaa_seuraavaan(
+    tmp_path, monkeypatch
+):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="CVLT",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="GOOD",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data_hyva = _price_data(
+        current_price=100.0, sma50=90.0, sma200=80.0, high_52w=120.0, low_52w=60.0
+    )
+
+    def _fetch_price_data(symbol):
+        return None if symbol == "CVLT" else price_data_hyva
+
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_price_data", _fetch_price_data)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 1.5)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 50.0)
+
+    tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+    ohitukset = tietokanta.get_skips("ajo1", db_path=polku)
+    assert len(ohitukset) == 1
+    assert ohitukset[0]["symbol"] == "CVLT"
+    assert ohitukset[0]["stage"] == "hintadata_puuttuu"
+
+    rivit = tietokanta.get_scores("ajo1", db_path=polku)
+    assert len(rivit) == 1
+    assert rivit[0]["symbol"] == "GOOD"
+
+
+def test_aja_kirjaa_ohituksen_hinta_alarajalla_syyssa_hinta_ja_raja(
+    tmp_path, monkeypatch
+):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="PENNY",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data = _price_data(current_price=2.0)
+    monkeypatch.setattr(
+        tekninen_analyytikko, "fetch_price_data", lambda symbol: price_data
+    )
+
+    tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+    ohitukset = tietokanta.get_skips("ajo1", db_path=polku)
+    assert len(ohitukset) == 1
+    assert ohitukset[0]["symbol"] == "PENNY"
+    assert ohitukset[0]["stage"] == "hinta_alaraja"
+    assert "2.0" in ohitukset[0]["reason"]
+    assert str(tekninen_analyytikko.MIN_SHARE_PRICE) in ohitukset[0]["reason"]
+
+
+def test_aja_kirjaa_ohituksen_vaihto_alarajalla(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="MICRO",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data = _price_data(current_price=20.0, avg_daily_turnover_usd=800_000)
+    monkeypatch.setattr(
+        tekninen_analyytikko, "fetch_price_data", lambda symbol: price_data
+    )
+
+    tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+    ohitukset = tietokanta.get_skips("ajo1", db_path=polku)
+    assert len(ohitukset) == 1
+    assert ohitukset[0]["symbol"] == "MICRO"
+    assert ohitukset[0]["stage"] == "vaihto_alaraja"
+
+
+def test_aja_kirjaa_ohituksen_kun_haku_epaonnistuu(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="BAD",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    def _fetch_price_data(symbol):
+        raise requests.exceptions.RequestException("simuloitu verkkovirhe")
+
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_price_data", _fetch_price_data)
+
+    tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+    ohitukset = tietokanta.get_skips("ajo1", db_path=polku)
+    assert len(ohitukset) == 1
+    assert ohitukset[0]["symbol"] == "BAD"
+    assert ohitukset[0]["stage"] == "haku_epaonnistui"
+    assert "simuloitu verkkovirhe" in ohitukset[0]["reason"]
+
+
+def test_ohitettu_symboli_ei_saa_pisteytysta(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="PENNY",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data = _price_data(current_price=2.0)
+    monkeypatch.setattr(
+        tekninen_analyytikko, "fetch_price_data", lambda symbol: price_data
+    )
+
+    tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+    rivit = tietokanta.get_scores("ajo1", db_path=polku)
+    assert [r["symbol"] for r in rivit] == []
+
+
+def test_onnistunut_symboli_ei_tuota_ohitusrivia(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="GOOD",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data_hyva = _price_data(
+        current_price=100.0, sma50=90.0, sma200=80.0, high_52w=120.0, low_52w=60.0
+    )
+    monkeypatch.setattr(
+        tekninen_analyytikko, "fetch_price_data", lambda symbol: price_data_hyva
+    )
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 1.5)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 50.0)
+
+    tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+    assert tietokanta.get_skips("ajo1", db_path=polku) == []
+
+
+def test_yksi_ohitus_ei_kaada_muun_ajon_pisteytysta(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="MICRO",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="GOOD",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data_micro = _price_data(current_price=20.0, avg_daily_turnover_usd=800_000)
+    price_data_hyva = _price_data(
+        current_price=100.0, sma50=90.0, sma200=80.0, high_52w=120.0, low_52w=60.0
+    )
+
+    def _fetch_price_data(symbol):
+        return price_data_micro if symbol == "MICRO" else price_data_hyva
+
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_price_data", _fetch_price_data)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 1.5)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 50.0)
+
+    summary = tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+    rivit = tietokanta.get_scores("ajo1", db_path=polku)
+    assert [r["symbol"] for r in rivit] == ["GOOD"]
+    assert "1 ohitettu" in summary
+
+
+def test_incomplete_price_data_error_ei_kirjaa_ohitusta(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    def _fetch_price_data(symbol):
+        raise tekninen_analyytikko.IncompletePriceDataError("kesken oleva palkki")
+
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_price_data", _fetch_price_data)
+
+    with pytest.raises(tekninen_analyytikko.IncompletePriceDataError):
+        tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+    assert tietokanta.get_skips("ajo1", db_path=polku) == []
+
+
 def test_aja_ohjelmointivirhe_calculate_scoressa_ei_ohitu_hiljaa(tmp_path, monkeypatch):
     polku = tmp_path / "testi.db"
     tietokanta.init_database(polku)

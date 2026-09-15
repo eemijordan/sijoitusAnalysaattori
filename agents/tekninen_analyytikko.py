@@ -494,6 +494,7 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
 
     recorded = 0
     failed_symbols = []
+    quiet_skipped = 0
     missing_stop = 0
     missing_target = 0
     first_logged = False
@@ -502,7 +503,16 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
         try:
             price_data = fetch_price_data(symbol)
             if price_data is None:
-                _loki.warning(f"{symbol}: time_series ei palauttanut dataa, ohitetaan")
+                reason = "time_series ei palauttanut dataa"
+                _loki.warning(f"{symbol}: {reason}, ohitetaan")
+                tietokanta.insert_skip(
+                    run_id=run_id,
+                    symbol=symbol,
+                    stage="hintadata_puuttuu",
+                    reason=reason,
+                    db_path=db_path,
+                )
+                quiet_skipped += 1
                 continue
 
             if not first_logged:
@@ -514,19 +524,36 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
 
             current_price = price_data["current_price"]
             if current_price < MIN_SHARE_PRICE:
-                _loki.info(
-                    f"{symbol}: MIN_SHARE_PRICE-raja hylkasi (hinta {current_price} "
-                    f"USD < {MIN_SHARE_PRICE} USD), ohitetaan"
+                reason = (
+                    f"MIN_SHARE_PRICE-raja hylkasi (hinta {current_price} "
+                    f"USD < {MIN_SHARE_PRICE} USD)"
                 )
+                _loki.info(f"{symbol}: {reason}, ohitetaan")
+                tietokanta.insert_skip(
+                    run_id=run_id,
+                    symbol=symbol,
+                    stage="hinta_alaraja",
+                    reason=reason,
+                    db_path=db_path,
+                )
+                quiet_skipped += 1
                 continue
 
             turnover = price_data.get("avg_daily_turnover_usd")
             if turnover is not None and turnover < MIN_DAILY_TURNOVER:
-                _loki.info(
-                    f"{symbol}: MIN_DAILY_TURNOVER-raja hylkasi (paivavaihto "
-                    f"{turnover:,.0f} USD < {MIN_DAILY_TURNOVER:,.0f} USD), "
-                    f"ohitetaan"
+                reason = (
+                    f"MIN_DAILY_TURNOVER-raja hylkasi (paivavaihto "
+                    f"{turnover:,.0f} USD < {MIN_DAILY_TURNOVER:,.0f} USD)"
                 )
+                _loki.info(f"{symbol}: {reason}, ohitetaan")
+                tietokanta.insert_skip(
+                    run_id=run_id,
+                    symbol=symbol,
+                    stage="vaihto_alaraja",
+                    reason=reason,
+                    db_path=db_path,
+                )
+                quiet_skipped += 1
                 continue
 
             atr = fetch_atr(symbol)
@@ -543,6 +570,13 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
             # ulkopuolella: niiden virhe on ohjelmointivirhe, ei
             # verkkovirhe, eika se saa nayttaa samalta.
             _loki.warning(f"{symbol}: kasittely epaonnistui, ohitetaan - {error}")
+            tietokanta.insert_skip(
+                run_id=run_id,
+                symbol=symbol,
+                stage="haku_epaonnistui",
+                reason=str(error),
+                db_path=db_path,
+            )
             failed_symbols.append(symbol)
             continue
 
@@ -571,6 +605,8 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
         recorded += 1
 
     summary = f"{recorded} pisteytysta kirjattu"
+    if quiet_skipped:
+        summary += f", {quiet_skipped} ohitettu"
     if failed_symbols:
         summary += f", {len(failed_symbols)} epaonnistui ({', '.join(failed_symbols)})"
         _loki.error(f"Ajo {run_id} ({run_type}): {summary}")

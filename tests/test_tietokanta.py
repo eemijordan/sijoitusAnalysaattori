@@ -16,6 +16,7 @@ ODOTETUT_TAULUT = {
     "runs",
     "market_reference",
     "portfolio_snapshots",
+    "skipped_symbols",
 }
 
 
@@ -1005,3 +1006,75 @@ def test_parhaat_pisteet_tyhja_kanta_palauttaa_tyhjan_listan(db_polku):
     tietokanta.init_database(db_polku)
 
     assert tietokanta.get_best_scores(db_path=db_polku) == []
+
+
+# --- skipped_symbols: insert_skip() / get_skips() (vaihe 2i) ---
+
+
+def test_ohitus_tallentuu_ja_luetaan_takaisin(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_skip(
+        run_id="ajo1",
+        symbol="CVLT",
+        stage="hintadata_puuttuu",
+        reason="time_series ei palauttanut dataa",
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_skips("ajo1", db_path=db_polku)
+    assert len(rivit) == 1
+    assert rivit[0]["symbol"] == "CVLT"
+    assert rivit[0]["stage"] == "hintadata_puuttuu"
+    assert rivit[0]["reason"] == "time_series ei palauttanut dataa"
+
+
+def test_ohitukset_rajautuvat_kysyttyyn_ajoon(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_skip(
+        run_id="ajo1",
+        symbol="CVLT",
+        stage="hintadata_puuttuu",
+        reason="x",
+        db_path=db_polku,
+    )
+    tietokanta.insert_skip(
+        run_id="ajo2", symbol="PG", stage="hinta_alaraja", reason="y", db_path=db_polku
+    )
+
+    rivit = tietokanta.get_skips("ajo1", db_path=db_polku)
+    assert [r["symbol"] for r in rivit] == ["CVLT"]
+
+
+def test_ohitukset_tyhja_kanta_palauttaa_tyhjan_listan(db_polku):
+    tietokanta.init_database(db_polku)
+
+    assert tietokanta.get_skips("ajo1", db_path=db_polku) == []
+
+
+def test_init_database_lisaa_skipped_symbols_taulun_vanhaan_kantaan_ilman_migraatiota(
+    db_polku,
+):
+    # skipped_symbols on kokonaan uusi taulu, ei uusi sarake olemassa
+    # olevaan tauluun - executescript(SCHEMA) luo sen suoraan CREATE TABLE
+    # IF NOT EXISTS:lla, joten sarakemigraatiota (vaihe D2) ei tarvita
+    # taman taulun kohdalla. Simuloi "vanhaa" tuotantokantaa jossa taulua
+    # ei viela ole ja varmistaa etta init_database() ei kaadu ja ettei se
+    # raportoi taman taulun kohdalla mitaan lisattyna sarakkeena.
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            "CREATE TABLE portfolio ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "initial_capital REAL NOT NULL, cash REAL NOT NULL, "
+            "currency TEXT NOT NULL DEFAULT 'USD', updated_at TEXT NOT NULL)"
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    lisatyt = tietokanta.init_database(db_polku)
+
+    assert not any(nimi.startswith("skipped_symbols.") for nimi in lisatyt)
+    assert tietokanta.get_skips("ajo1", db_path=db_polku) == []

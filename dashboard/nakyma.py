@@ -303,6 +303,25 @@ else:
             )
             st.dataframe(_tyhjat_viivoiksi(df), hide_index=True, width="stretch")
 
+        # Tyhja osio jatetaan kokonaan pois - tyhja otsikko olisi kohinaa
+        # (ks. CLAUDE.md, vaihe 2i). Nakyy vain kun tama ajo oikeasti ohitti
+        # symboleja, joten CVLT-tyyppinen katoaminen ei jaa enaa arvailun
+        # varaan.
+        ohitukset, virhe_ohitukset = _turvallinen_haku(tietokanta.get_skips, run_id)
+        if virhe_ohitukset:
+            st.info(virhe_ohitukset)
+        elif ohitukset:
+            st.markdown("**Ohitetut**")
+            df = pd.DataFrame(ohitukset)[["symbol", "stage", "reason"]]
+            df = df.rename(
+                columns={
+                    "symbol": "Symboli",
+                    "stage": "Vaihe",
+                    "reason": "Syy",
+                }
+            )
+            st.dataframe(_tyhjat_viivoiksi(df), hide_index=True, width="stretch")
+
     with alarivi[2], st.container(border=True):
         st.markdown("**Agentti 3 – päätökset ja salkun tilanne**")
         paatokset, virhe = _turvallinen_haku(tietokanta.get_decisions, run_id)
