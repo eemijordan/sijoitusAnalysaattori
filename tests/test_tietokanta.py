@@ -204,8 +204,87 @@ def test_pisteytys_ilman_stop_parametreja_tallentaa_nonet(db_polku):
     rivit = tietokanta.get_scores("ajo1", db_path=db_polku)
     assert len(rivit) == 1
     assert rivit[0]["stop_loss"] is None
+    assert rivit[0]["stop_source"] is None
     assert rivit[0]["target_price"] is None
     assert rivit[0]["rr_ratio"] is None
+
+
+# --- technical_scores.stop_source (vaihe 2j) ---
+
+
+def test_pisteytys_tallentaa_stop_sourcen(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=8,
+        price=100.0,
+        stop_loss=90.0,
+        stop_source="viikkopohja",
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_scores("ajo1", db_path=db_polku)
+    assert rivit[0]["stop_source"] == "viikkopohja"
+
+
+def test_pisteytys_tuntematon_stop_source_nostaa_virheen(db_polku):
+    tietokanta.init_database(db_polku)
+
+    with pytest.raises(ValueError):
+        tietokanta.insert_score(
+            run_id="ajo1",
+            run_type="normaali",
+            symbol="AAPL",
+            risk_reward_score=8,
+            price=100.0,
+            stop_source="jokin_tuntematon",
+            db_path=db_polku,
+        )
+
+
+def test_init_database_lisaa_stop_sourcen_vanhaan_kantaan_rivit_sailyvat(db_polku):
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            """
+            CREATE TABLE technical_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                run_type TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                risk_reward_score REAL NOT NULL,
+                price REAL,
+                indicators_json TEXT,
+                rationale TEXT,
+                stop_loss REAL,
+                target_price REAL,
+                rr_ratio REAL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        yhteys.execute(
+            """
+            INSERT INTO technical_scores (
+                run_id, run_type, symbol, risk_reward_score, stop_loss, created_at
+            ) VALUES ('ajo1', 'normaali', 'AAPL', 8, 85.0, '2026-09-01T00:00:00')
+            """
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    lisatyt = tietokanta.init_database(db_polku)
+
+    assert "technical_scores.stop_source" in lisatyt
+
+    rivit = tietokanta.get_scores("ajo1", db_path=db_polku)
+    assert len(rivit) == 1
+    assert rivit[0]["stop_loss"] == 85.0  # vanha rivi sailyy koskemattomana
+    assert rivit[0]["stop_source"] is None  # vanhalle riville ei keksita perustetta
 
 
 # --- get_cooldown_symbols(): vaihe 3c ---

@@ -287,6 +287,7 @@ else:
                     "risk_reward_score",
                     "price",
                     "stop_loss",
+                    "stop_source",
                     "target_price",
                     "rr_ratio",
                 ]
@@ -297,6 +298,7 @@ else:
                     "risk_reward_score": "RR-pisteet",
                     "price": "Hinta",
                     "stop_loss": "Stop",
+                    "stop_source": "Stop-peruste",
                     "target_price": "Tavoite",
                     "rr_ratio": "RR-suhde",
                 }

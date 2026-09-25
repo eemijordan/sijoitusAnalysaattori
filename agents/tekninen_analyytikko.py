@@ -12,7 +12,9 @@ from core.asetukset import (
     BENCHMARK_SYMBOL,
     MIN_DAILY_TURNOVER,
     MIN_SHARE_PRICE,
-    STOP_ATR_MULTIPLIER,
+    STOP_MAX_DISTANCE,
+    SWING_MIN_MOVE_DAILY,
+    SWING_MIN_MOVE_WEEKLY,
     get_twelve_data_key,
 )
 
@@ -127,6 +129,130 @@ def is_bar_ready(bar_date: date, today_et: date) -> tuple[bool, str]:
     return False, reason
 
 
+def _normalize_bars_oldest_first(bars: list[dict]) -> list[dict]:
+    """Muuntaa palkit muotoon {date, high, low} ja järjestää vanhimmasta uusimpaan.
+
+    Twelve Data palauttaa palkit uusin ensin - suunta pitää näkyä koodissa
+    eksplisiittisesti (bars_oldest_first), koska väärinpäin käännetty sarja
+    antaisi uskottavan näköisen mutta väärän tuloksen pohjien haussa.
+    """
+    normalized = [
+        {
+            "date": bar["datetime"][:10],
+            "high": float(bar["high"]),
+            "low": float(bar["low"]),
+        }
+        for bar in bars
+    ]
+    normalized.sort(key=lambda bar: bar["date"])
+    return normalized
+
+
+def resample_weekly(bars: list[dict]) -> list[dict]:
+    """Kokoaa päiväpalkeista viikkopalkit vanhimmasta uusimpaan.
+
+    Ei haeta Twelve Datasta interval=1week - se olisi ylimääräinen API-kutsu
+    per symboli, ja kuluvan viikon palkki olisi kesken samalla tavalla kuin
+    kuluva päiväpalkki (ks. is_bar_ready()). Päiväpalkeista koottuna jokainen
+    päivä on jo valmis. Viikko ryhmitellään ISO-viikon mukaan, jotta
+    vuodenvaihteen yli menevä viikko pysyy yhtenä viikkona.
+    """
+    daily_bars_oldest_first = _normalize_bars_oldest_first(bars)
+
+    weeks: dict[tuple[int, int], dict] = {}
+    order: list[tuple[int, int]] = []
+    for bar in daily_bars_oldest_first:
+        bar_date = date.fromisoformat(bar["date"])
+        iso_year, iso_week, _ = bar_date.isocalendar()
+        key = (iso_year, iso_week)
+        if key not in weeks:
+            weeks[key] = {"date": bar_date, "high": bar["high"], "low": bar["low"]}
+            order.append(key)
+        else:
+            week = weeks[key]
+            week["date"] = min(week["date"], bar_date)
+            week["high"] = max(week["high"], bar["high"])
+            week["low"] = min(week["low"], bar["low"])
+
+    return [
+        {
+            "date": weeks[key]["date"].isoformat(),
+            "high": weeks[key]["high"],
+            "low": weeks[key]["low"],
+        }
+        for key in order
+    ]
+
+
+def find_swing_lows(bars_oldest_first: list[dict], min_move: float) -> list[dict]:
+    """Palauttaa vahvistetut pohjapalkit vanhimmasta uusimpaan (ZigZag).
+
+    Pohja on vain selkeän heilahduksen pohja: kurssi on laskenut siihen
+    vähintään min_move-osuuden edellisestä huipusta JA noussut siitä
+    vähintään min_move-osuuden - pieni notkahdus ei kelpaa. Kääntymä
+    vahvistuu vasta myöhemmällä palkilla, ei sillä palkilla joka teki uuden
+    ääripisteen, joten palkki ei voi vahvistaa pohjaa omalla arvollaan (ks.
+    CLAUDE.md, vaihe 2j). Sama syy tarkistetaan myös laskusuunnassa ennen
+    kääntymää: palkki joka painaa pohjan uuteen, syvempään lukemaan ei voi
+    vahvistaa sitä vanhaa, jo ylitettyä pohjaa vaikka sen oma yläreuna
+    yltäisikin rajan yli - uusi, syvempi pohja tarvitsee oman
+    vahvistuksensa myöhemmältä palkilta. Pohja kirjataan vain siirryttäessä
+    laskusta nousuun - sarjan ensimmäinen kääntymä ylöspäin suoraan
+    alkutilasta ei tuota pohjaa, koska sen lähtöpisteestä ei ole näyttöä
+    että siihen olisi laskettu vähintään rajan verran.
+    """
+    if len(bars_oldest_first) < 2:
+        return []
+
+    swing_lows: list[dict] = []
+    direction = None  # None, "up" tai "down"
+    extreme_high = bars_oldest_first[0]
+    extreme_low = bars_oldest_first[0]
+
+    for bar in bars_oldest_first[1:]:
+        if direction is None:
+            if bar["low"] <= extreme_high["high"] * (1 - min_move):
+                direction = "down"
+                extreme_low = bar
+            elif bar["high"] >= extreme_low["low"] * (1 + min_move):
+                direction = "up"
+                extreme_high = bar
+            else:
+                if bar["high"] > extreme_high["high"]:
+                    extreme_high = bar
+                if bar["low"] < extreme_low["low"]:
+                    extreme_low = bar
+        elif direction == "up":
+            if bar["low"] <= extreme_high["high"] * (1 - min_move):
+                direction = "down"
+                extreme_low = bar
+            elif bar["high"] > extreme_high["high"]:
+                extreme_high = bar
+        else:  # direction == "down"
+            if bar["low"] < extreme_low["low"]:
+                extreme_low = bar
+            elif bar["high"] >= extreme_low["low"] * (1 + min_move):
+                swing_lows.append(extreme_low)
+                direction = "up"
+                extreme_high = bar
+
+    return swing_lows
+
+
+def _select_swing_low_below_price(
+    swing_lows: list[dict], current_price: float
+) -> float | None:
+    """Valitsee viimeisimmän vahvistetun pohjan joka on alle nykyhinnan.
+
+    Nykyhinnan yläpuolella oleva pohja on murtunut tuki - se ohitetaan ja
+    katsotaan edellistä.
+    """
+    for swing in reversed(swing_lows):
+        if swing["low"] < current_price:
+            return swing["low"]
+    return None
+
+
 def _calculate_price_stats(bars: list[dict]) -> dict:
     # Twelve Datan time_series palauttaa paivat uusin ensin.
     close_prices = [float(p["close"]) for p in bars]
@@ -151,8 +277,14 @@ def _calculate_price_stats(bars: list[dict]) -> dict:
         else None
     )
 
+    current_price = close_prices[0]
+    daily_bars_oldest_first = _normalize_bars_oldest_first(bars)
+    weekly_bars = resample_weekly(bars)
+    swing_lows_weekly = find_swing_lows(weekly_bars, SWING_MIN_MOVE_WEEKLY)
+    swing_lows_daily = find_swing_lows(daily_bars_oldest_first, SWING_MIN_MOVE_DAILY)
+
     return {
-        "current_price": close_prices[0],
+        "current_price": current_price,
         "sma50": sma50,
         "sma200": sma200,
         "high_52w": max(highs),
@@ -164,6 +296,12 @@ def _calculate_price_stats(bars: list[dict]) -> dict:
         ),
         "history_days": len(close_prices),
         "latest_bar": bars[0].get("datetime"),
+        "swing_low_weekly": _select_swing_low_below_price(
+            swing_lows_weekly, current_price
+        ),
+        "swing_low_daily": _select_swing_low_below_price(
+            swing_lows_daily, current_price
+        ),
     }
 
 
@@ -406,23 +544,41 @@ def calculate_score(
 
 
 def calculate_stop_and_target(
-    price: float, atr: float | None, high_52w: float | None
-) -> tuple[float | None, float | None, float | None]:
-    """Laskee stop-lossin, tavoitehinnan ja niiden RR-suhteen.
+    price: float,
+    swing_low_weekly: float | None,
+    swing_low_daily: float | None,
+    high_52w: float | None,
+) -> tuple[float, str, float | None, float | None]:
+    """Laskee stop-lossin, sen perusteen, tavoitehinnan ja RR-suhteen.
 
-    Palauttaa (stop_loss, target_price, rr_ratio).
+    Palauttaa (stop_loss, stop_source, target_price, rr_ratio).
 
-    Stop tulee ATR:sta (STOP_ATR_MULTIPLIER x ATR ostohinnan alle), tavoite
-    52 viikon huipusta - tarkoituksella eri lahteista. Jos molemmat olisivat
-    kiinteita ATR-kertoimia (esim. -2 ja +4), RR olisi 4/2 = 2,0 joka ikiselle
-    osakkeelle aina eika luku kertoisi mitaan. Tavoitteen on tultava muualta,
-    jotta suhde oikeasti vaihtelee osakkeittain silla data-arvoa on.
+    Stop asetetaan edellisen vahvistetun pohjan alle: viikkopohja ensin (jos
+    enintaan STOP_MAX_DISTANCE alempana), muuten paivapohja, muuten
+    STOP_MAX_DISTANCE hinnan alle (ks. CLAUDE.md, vaihe 2j). Stop on siksi
+    aina maaritelty kun hinta on positiivinen - toisin kuin vanha
+    ATR-pohjainen stop, joka saattoi jaada Nonesiksi.
+
+    Tavoite on edelleen 52 viikon huippu - tarkoituksella eri lahteesta kuin
+    stop, jotta RR-suhde oikeasti vaihtelee osakkeittain eika ole sama luku
+    joka ikiselle osakkeelle.
     """
-    stop_loss = None
-    if atr is not None:
-        candidate_stop = price - STOP_ATR_MULTIPLIER * atr
-        if candidate_stop > 0:
-            stop_loss = candidate_stop
+    weekly_distance = (
+        (price - swing_low_weekly) / price if swing_low_weekly is not None else None
+    )
+    daily_distance = (
+        (price - swing_low_daily) / price if swing_low_daily is not None else None
+    )
+
+    if weekly_distance is not None and weekly_distance <= STOP_MAX_DISTANCE:
+        stop_loss = swing_low_weekly
+        stop_source = "viikkopohja"
+    elif daily_distance is not None and daily_distance <= STOP_MAX_DISTANCE:
+        stop_loss = swing_low_daily
+        stop_source = "paivapohja"
+    else:
+        stop_loss = price * (1 - STOP_MAX_DISTANCE)
+        stop_source = "katto"
 
     # Tavoite jaa laskematta jos osake on jo omassa 52 viikon huipussaan -
     # talle mittarille ei silloin jaa nousuvaraa.
@@ -431,13 +587,13 @@ def calculate_stop_and_target(
         target_price = high_52w
 
     rr_ratio = None
-    if stop_loss is not None and target_price is not None:
+    if target_price is not None:
         risk = price - stop_loss
         reward = target_price - price
         if risk > 0:
             rr_ratio = reward / risk
 
-    return stop_loss, target_price, rr_ratio
+    return stop_loss, stop_source, target_price, rr_ratio
 
 
 def _fetch_and_store_benchmark(run_id: str, db_path) -> None:
@@ -581,8 +737,11 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
             continue
 
         score, indicators, rationale = calculate_score(price_data, atr, rsi)
-        stop_loss, target_price, rr_ratio = calculate_stop_and_target(
-            current_price, atr, price_data.get("high_52w")
+        stop_loss, stop_source, target_price, rr_ratio = calculate_stop_and_target(
+            current_price,
+            price_data.get("swing_low_weekly"),
+            price_data.get("swing_low_daily"),
+            price_data.get("high_52w"),
         )
         if stop_loss is None:
             missing_stop += 1
@@ -598,6 +757,7 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
             indicators_json=json.dumps(indicators),
             rationale=rationale,
             stop_loss=stop_loss,
+            stop_source=stop_source,
             target_price=target_price,
             rr_ratio=rr_ratio,
             db_path=db_path,

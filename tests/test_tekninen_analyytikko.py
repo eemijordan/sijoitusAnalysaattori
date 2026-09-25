@@ -317,80 +317,276 @@ def test_laske_kurssitunnusluvut_palauttaa_viimeisimman_palkin():
     assert tunnusluvut["current_price"] == 100.0
 
 
+# --- resample_weekly(): puhdas logiikka, ei verkkoa eika tietokantaa ---
+
+
+def test_resample_viikon_ylin_ja_alin_ovat_paivien_aariarvot():
+    paivat = [
+        _paivapalkki("2026-01-05", high=105.0, low=99.0),
+        _paivapalkki("2026-01-06", high=110.0, low=95.0),
+        _paivapalkki("2026-01-07", high=102.0, low=100.0),
+    ]
+
+    viikot = tekninen_analyytikko.resample_weekly(paivat)
+
+    assert len(viikot) == 1
+    assert viikot[0]["high"] == 110.0
+    assert viikot[0]["low"] == 95.0
+    assert viikot[0]["date"] == "2026-01-05"
+
+
+def test_resample_vuodenvaihteen_yli_menva_viikko_on_yksi_viikko():
+    # 2026-01-01 on torstai, joten ISO-viikko 1/2026 alkaa ma 2025-12-29 ja
+    # sisaltaa myos joulukuun paivat - vuodenvaihde ei saa katkaista viikkoa.
+    paivat = [
+        _paivapalkki("2025-12-30", high=100.0, low=90.0),
+        _paivapalkki("2026-01-01", high=105.0, low=95.0),
+    ]
+
+    viikot = tekninen_analyytikko.resample_weekly(paivat)
+
+    assert len(viikot) == 1
+    assert viikot[0]["high"] == 105.0
+    assert viikot[0]["low"] == 90.0
+
+
+def test_resample_uusin_ensin_syote_palauttaa_vanhimmasta_uusimpaan():
+    paivat = [
+        _paivapalkki("2026-01-13", high=120.0, low=118.0),
+        _paivapalkki("2026-01-12", high=119.0, low=117.0),
+        _paivapalkki("2026-01-06", high=110.0, low=95.0),
+        _paivapalkki("2026-01-05", high=105.0, low=99.0),
+    ]
+
+    viikot = tekninen_analyytikko.resample_weekly(paivat)
+
+    assert len(viikot) == 2
+    assert viikot[0]["date"] == "2026-01-05"
+    assert viikot[0]["high"] == 110.0
+    assert viikot[1]["date"] == "2026-01-12"
+    assert viikot[1]["high"] == 120.0
+
+
+# --- find_swing_lows(): ZigZag, raja 10 %, ei aivan tarkalla rajalla ---
+
+
+def _bar(low, high=None):
+    return {"date": "x", "high": high if high is not None else low, "low": low}
+
+
+def test_swing_kunnon_heilahdus_loytyy():
+    bars = [_bar(100), _bar(85), _bar(100)]
+
+    pohjat = tekninen_analyytikko.find_swing_lows(bars, min_move=0.10)
+
+    assert [p["low"] for p in pohjat] == [85]
+
+
+def test_swing_pieni_notkahdus_ei_kelpaa():
+    bars = [_bar(100), _bar(95), _bar(100)]
+
+    pohjat = tekninen_analyytikko.find_swing_lows(bars, min_move=0.10)
+
+    assert pohjat == []
+
+
+def test_swing_notkahdus_ison_heilahduksen_sisalla_ohitetaan():
+    bars = [_bar(100), _bar(80), _bar(90), _bar(84), _bar(100)]
+
+    pohjat = tekninen_analyytikko.find_swing_lows(bars, min_move=0.10)
+
+    assert [p["low"] for p in pohjat] == [80]
+
+
+def test_swing_sama_palkki_ei_vahvista_itseaan():
+    # b1=88 kaantaa suunnan laskuun. b2 tekee uuden pohjan 75 (oma high 88,
+    # eli oman pohjansa suhteen 17 % - siita huolimatta se ei vahvista
+    # itseaan, koska vahvistus katsoo vanhaa aariarvoa (88), ei omaa.
+    # Vasta b3 (high 90, +20 % pohjasta 75) vahvistaa pohjan.
+    bars = [
+        _bar(low=100, high=100),
+        _bar(low=88, high=88),
+        _bar(low=75, high=88),
+        _bar(low=85, high=90),
+    ]
+
+    pohjat = tekninen_analyytikko.find_swing_lows(bars, min_move=0.10)
+
+    assert [p["low"] for p in pohjat] == [75]
+
+
+def test_swing_palkki_joka_alittaa_pohjan_ei_vahvista_vanhaa_pohjaa():
+    # 100 -> 80 kaantaa suunnan laskuun (pohja 80). Kolmas palkki painaa
+    # pohjan syvemmalle (75) JA nousee samalla palkilla yli 10 % vanhasta
+    # pohjasta (80): 90 >= 80*1.10=88. Jos vahvistus tarkistettaisiin ennen
+    # uutta pohjaa, tama vahvistaisi virheellisesti vanhan pohjan 80, vaikka
+    # kurssi kavi juuri sen alapuolella (75). Oikea pohja on 75, ja se
+    # vahvistuu vasta neljannella palkilla (95 >= 75*1.10=82.5).
+    bars = [_bar(100), _bar(80), _bar(low=75, high=90), _bar(95)]
+
+    pohjat = tekninen_analyytikko.find_swing_lows(bars, min_move=0.10)
+
+    assert [p["low"] for p in pohjat] == [75]
+
+
+def test_swing_vahvistamaton_viimeinen_pohja_ei_kelpaa():
+    bars = [_bar(100), _bar(80)]
+
+    pohjat = tekninen_analyytikko.find_swing_lows(bars, min_move=0.10)
+
+    assert pohjat == []
+
+
+def test_swing_useita_heilahduksia_palautetaan_vanhimmasta_uusimpaan():
+    bars = [_bar(100), _bar(80), _bar(100), _bar(70), _bar(100)]
+
+    pohjat = tekninen_analyytikko.find_swing_lows(bars, min_move=0.10)
+
+    assert [p["low"] for p in pohjat] == [80, 70]
+
+
+def test_swing_alkutila_ylospain_kaantyva_sarja_ei_tuota_pohjaa():
+    bars = [_bar(100), _bar(97), _bar(110)]
+
+    pohjat = tekninen_analyytikko.find_swing_lows(bars, min_move=0.10)
+
+    assert pohjat == []
+
+
+def test_swing_nouseva_sarja_ja_liian_lyhyt_sarja_palauttavat_tyhjan():
+    nouseva = [_bar(100), _bar(105), _bar(110), _bar(120)]
+    liian_lyhyt = [_bar(100)]
+
+    assert tekninen_analyytikko.find_swing_lows(nouseva, min_move=0.10) == []
+    assert tekninen_analyytikko.find_swing_lows([], min_move=0.10) == []
+    assert tekninen_analyytikko.find_swing_lows(liian_lyhyt, min_move=0.10) == []
+
+
+# --- _select_swing_low_below_price(): pohjan valinta nykyhinnan perusteella ---
+
+
+def test_uusin_pohja_nykyhinnan_ylapuolella_ohitetaan_valitaan_edellinen():
+    pohjat = [_bar(low=80), _bar(low=95)]
+
+    valittu = tekninen_analyytikko._select_swing_low_below_price(
+        pohjat, current_price=90.0
+    )
+
+    assert valittu == 80
+
+
 # --- calculate_stop_and_target(): puhdas logiikka, ei verkkoa eika tietokantaa ---
+#
+# Vaihe 2j korvasi ATR-pohjaisen stopin edellisen pohjan alle asetetulla
+# stopilla (ks. CLAUDE.md). Vanhat ATR-testit (puuttuva ATR, valtava ATR joka
+# vei stopin negatiiviseksi) eivat enaa kuvaa mitaan tilannetta - stop on nyt
+# aina maaritelty prosenttietaisyytena pohjasta tai kattona, koskaan ATR:sta,
+# eika voi koskaan menna nollaan tai alle (ks.
+# test_stop_on_aina_alle_hinnan_ja_yli_nollan).
 
 
-def test_stop_tavoite_ja_rr_esimerkkilaskelma():
-    stop, tavoite, rr = tekninen_analyytikko.calculate_stop_and_target(
-        price=100.0, atr=5.0, high_52w=130.0
+def test_stop_viikkopohjasta_kun_se_on_rajan_sisalla():
+    stop, lahde, tavoite, rr = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, swing_low_weekly=90.0, swing_low_daily=None, high_52w=130.0
     )
 
     assert stop == 90.0
+    assert lahde == "viikkopohja"
     assert tavoite == 130.0
-    assert rr == 3.0
+    assert rr == 3.0  # (130-100) / (100-90)
 
 
-def test_puuttuva_atr_jattaa_stopin_ja_rr_n_laskematta_tavoite_lasketaan_silti():
-    stop, tavoite, rr = tekninen_analyytikko.calculate_stop_and_target(
-        price=100.0, atr=None, high_52w=130.0
+def test_stop_paivapohjasta_kun_viikkopohja_liian_kaukana():
+    stop, lahde, _, _ = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, swing_low_weekly=75.0, swing_low_daily=92.0, high_52w=None
     )
 
-    assert stop is None
-    assert rr is None
-    assert tavoite == 130.0
+    assert stop == 92.0
+    assert lahde == "paivapohja"
+
+
+def test_stop_katosta_kun_molemmat_pohjat_liian_kaukana():
+    stop, lahde, _, _ = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, swing_low_weekly=70.0, swing_low_daily=75.0, high_52w=None
+    )
+
+    assert stop == 80.0
+    assert lahde == "katto"
+
+
+def test_stop_paivapohjasta_kun_viikkopohja_puuttuu():
+    stop, lahde, _, _ = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, swing_low_weekly=None, swing_low_daily=92.0, high_52w=None
+    )
+
+    assert stop == 92.0
+    assert lahde == "paivapohja"
+
+
+def test_stop_katosta_kun_molemmat_pohjat_puuttuvat():
+    stop, lahde, _, _ = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, swing_low_weekly=None, swing_low_daily=None, high_52w=None
+    )
+
+    assert stop == 80.0
+    assert lahde == "katto"
+
+
+def test_stop_rajatapaus_tasmalleen_20_prosenttia_kelpaa():
+    stop, lahde, _, _ = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, swing_low_weekly=80.0, swing_low_daily=None, high_52w=None
+    )
+
+    assert stop == 80.0
+    assert lahde == "viikkopohja"
 
 
 def test_huippu_hinnan_alla_tai_yhtasuuri_jattaa_tavoitteen_ja_rr_n_laskematta():
-    stop_alle, tavoite_alle, rr_alle = tekninen_analyytikko.calculate_stop_and_target(
-        price=100.0, atr=5.0, high_52w=90.0
+    _, _, tavoite_alle, rr_alle = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, swing_low_weekly=90.0, swing_low_daily=None, high_52w=90.0
     )
-    stop_yhtasuuri, tavoite_yhtasuuri, rr_yhtasuuri = (
+    _, _, tavoite_yhtasuuri, rr_yhtasuuri = (
         tekninen_analyytikko.calculate_stop_and_target(
-            price=100.0, atr=5.0, high_52w=100.0
+            price=100.0, swing_low_weekly=90.0, swing_low_daily=None, high_52w=100.0
         )
     )
 
     assert tavoite_alle is None
     assert rr_alle is None
-    assert stop_alle == 90.0  # stop lasketaan silti
-
     assert tavoite_yhtasuuri is None
     assert rr_yhtasuuri is None
-    assert stop_yhtasuuri == 90.0
 
 
 def test_puuttuva_huippu_jattaa_tavoitteen_laskematta():
-    _, tavoite, _ = tekninen_analyytikko.calculate_stop_and_target(
-        price=100.0, atr=5.0, high_52w=None
+    _, _, tavoite, _ = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, swing_low_weekly=90.0, swing_low_daily=None, high_52w=None
     )
 
     assert tavoite is None
 
 
-def test_valtava_atr_jolla_stop_menisi_nollaan_tai_alle_jattaa_stopin_laskematta():
-    stop_nolla, _, rr_nolla = tekninen_analyytikko.calculate_stop_and_target(
-        price=100.0, atr=50.0, high_52w=130.0
-    )
-    stop_negatiivinen, _, rr_negatiivinen = (
-        tekninen_analyytikko.calculate_stop_and_target(
-            price=100.0, atr=60.0, high_52w=130.0
+def test_stop_on_aina_alle_hinnan_ja_yli_nollan():
+    tapaukset = [
+        (100.0, 90.0, None),
+        (100.0, None, 92.0),
+        (100.0, None, None),
+        (5.0, None, None),
+    ]
+    for price, viikko, paiva in tapaukset:
+        stop, _, _, _ = tekninen_analyytikko.calculate_stop_and_target(
+            price=price, swing_low_weekly=viikko, swing_low_daily=paiva, high_52w=None
         )
-    )
-
-    assert stop_nolla is None
-    assert rr_nolla is None
-    assert stop_negatiivinen is None
-    assert rr_negatiivinen is None
+        assert 0 < stop < price
 
 
-def test_eri_atr_antaa_eri_rr_suhteen_samalla_hinnalla_ja_huipulla():
+def test_eri_viikkopohja_antaa_eri_rr_suhteen_samalla_hinnalla_ja_huipulla():
     # Todistaa ettei rr_ratio ole vakio: jos stop ja tavoite tulisivat
-    # molemmat kiinteista ATR-kertoimista, suhde olisi aina sama luku.
-    _, _, rr_matala_riski = tekninen_analyytikko.calculate_stop_and_target(
-        price=100.0, atr=2.0, high_52w=130.0
+    # molemmat kiinteista kertoimista, suhde olisi aina sama luku.
+    _, _, _, rr_matala_riski = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, swing_low_weekly=95.0, swing_low_daily=None, high_52w=130.0
     )
-    _, _, rr_korkea_riski = tekninen_analyytikko.calculate_stop_and_target(
-        price=100.0, atr=10.0, high_52w=130.0
+    _, _, _, rr_korkea_riski = tekninen_analyytikko.calculate_stop_and_target(
+        price=100.0, swing_low_weekly=85.0, swing_low_daily=None, high_52w=130.0
     )
 
     assert rr_matala_riski != rr_korkea_riski
@@ -544,7 +740,12 @@ def test_aja_kirjoittaa_pisteytysrivin_oikealla_ajo_idlla_ja_hinnalla(
     )
 
     price_data = _price_data(
-        current_price=150.0, sma50=140.0, sma200=130.0, high_52w=180.0, low_52w=100.0
+        current_price=150.0,
+        sma50=140.0,
+        sma200=130.0,
+        high_52w=180.0,
+        low_52w=100.0,
+        swing_low_weekly=140.0,
     )
 
     monkeypatch.setattr(
@@ -560,9 +761,10 @@ def test_aja_kirjoittaa_pisteytysrivin_oikealla_ajo_idlla_ja_hinnalla(
     assert rivit[0]["symbol"] == "AAPL"
     assert rivit[0]["run_id"] == "ajo1"
     assert rivit[0]["price"] == 150.0
-    assert rivit[0]["stop_loss"] == 146.0  # 150 - 2 * 2.0
+    assert rivit[0]["stop_loss"] == 140.0  # viikkopohja, 6.7 % alle hinnan
+    assert rivit[0]["stop_source"] == "viikkopohja"
     assert rivit[0]["target_price"] == 180.0  # 52 viikon huippu
-    assert rivit[0]["rr_ratio"] == 7.5  # (180-150) / (150-146)
+    assert rivit[0]["rr_ratio"] == 3.0  # (180-150) / (150-140)
 
 
 def test_aja_ohittaa_alle_min_osakekurssin_eika_kutsu_atr_rsi(tmp_path, monkeypatch):
@@ -1138,3 +1340,47 @@ def test_aja_ohjelmointivirhe_calculate_scoressa_ei_ohitu_hiljaa(tmp_path, monke
 
     with pytest.raises(KeyError):
         tekninen_analyytikko.run("ajo1", "normaali", db_path=polku)
+
+
+# --- vaihe 2j: olemassa oleva position oma stop ei muutu tarkistusajossa ---
+
+
+def test_tarkistusajo_ei_muuta_position_omaa_ostohetken_stoppia(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="ajo0",
+        stop_loss=85.0,  # mallin 1.1 (ATR-pohjainen) stop ostohetkella
+        db_path=polku,
+    )
+    tietokanta.insert_candidate(
+        run_id="ajo1",
+        run_type="tarkistus",
+        symbol="AAPL",
+        source="analyytikko",
+        advanced=1,
+        db_path=polku,
+    )
+
+    price_data_aapl = _price_data(current_price=100.0, swing_low_weekly=88.0)
+    price_data_spy = _price_data(current_price=500.0)
+
+    def _fetch_price_data(symbol):
+        return price_data_spy if symbol == "SPY" else price_data_aapl
+
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_price_data", _fetch_price_data)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 1.5)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 50.0)
+
+    tekninen_analyytikko.run("ajo1", "tarkistus", db_path=polku)
+
+    positio = tietokanta.get_open_positions(db_path=polku)[0]
+    assert positio["stop_loss"] == 85.0  # ostohetken stop, uusi saanto ei koske sita
+
+    uusi_pisteytys = tietokanta.get_scores("ajo1", db_path=polku)[0]
+    assert uusi_pisteytys["symbol"] == "AAPL"
+    assert uusi_pisteytys["stop_loss"] == 88.0  # eri kuin position oma stop
+    assert uusi_pisteytys["stop_source"] == "viikkopohja"

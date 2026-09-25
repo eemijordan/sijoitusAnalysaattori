@@ -12,7 +12,7 @@ load_dotenv(BASE_DIR / ".env")
 # Nostetaan aina kun pistemalli tai siihen vaikuttava vakio muuttuu (ks.
 # CLAUDE.md) - ihmisluettava merkintä. Varsinainen totuus ajon toistamiseksi
 # on git-commit (ks. core/orkestroija.py), koska se ei voi unohtua.
-MODEL_VERSION = "1.1"
+MODEL_VERSION = "1.2"
 
 # Sijoitusvakiot (ks. CLAUDE.md)
 INITIAL_CAPITAL = 10000  # USD
@@ -47,12 +47,26 @@ MAX_PRICE_DRIFT = 0.05  # 5 %
 # joten ilman tätä botti ostaisi yhtä innokkaasti 20 % pakkasella kuin
 # ensimmäisenä päivänä.
 PORTFOLIO_STOP_LEVEL = 0.80  # osuus INITIAL_CAPITAL:sta
-# Stop asetetaan kahden keskimääräisen päiväliikkeen (ATR) päähän ostohinnasta:
-# jos kurssi putoaa enemmän kuin kaksi normaalia päivää, tilanne ei ole enää se
-# jonka perusteella ostettiin. Kahta pienempi kerroin laukaisisi stopin
-# tavallisen päivittäisheilunnan takia, suurempi tekisi tappioista tarpeettoman
-# isoja.
-STOP_ATR_MULTIPLIER = 2.0
+# Prosenttiraja jolla ZigZag-heilahdus vahvistetaan pohjaksi (vaihe 2j): kurssin
+# on laskettava vähintään tämän verran edellisestä huipusta JA noustava
+# vähintään tämän verran pohjasta, ennen kuin pohja kirjataan. Isompi arvo
+# löytää vain isoja heilahduksia, pienempi myös pieniä - raja vastaa
+# TradingViewn Zig Zag -indikaattorin prosenttiasetusta (Deviation), joten
+# tasoa voi kokeilla kuvaajassa ennen kuin muuttaa vakiota.
+SWING_MIN_MOVE_WEEKLY = 0.10
+# Päiväraja on tarkoituksella pienempi kuin viikkoraja: viikkopalkin alin
+# kurssi on jo sen päivien alimpien minimi, joten samalla rajalla päivä- ja
+# viikkokaavio löytäisivät lähes samat heilahdukset eikä porrastus toisi
+# mitään uutta. Päiväkaavio on varasuunnitelma tilanteeseen jossa iso
+# viikkoheilahdus on liian kaukana, ja silloin halutaan lähempi, pienempi
+# mutta silti selkeä heilahdus.
+SWING_MIN_MOVE_DAILY = 0.05
+# Stop asetetaan edellisen vahvistetun pohjan (viikko ensin, sitten päivä)
+# alle - kohtaan jonka alittuminen tarkoittaa että nousun rakenne on oikeasti
+# rikki, ei vain tavallista päivittäisheiluntaa (ks. CLAUDE.md, vaihe 2j).
+# Jos yksikään pohja ei ole tämän etäisyyden sisällä, stop asetetaan tähän
+# kattoon hinnasta.
+STOP_MAX_DISTANCE = 0.20
 # Hystereesi, ei sattumanvarainen luku: ostetaan kun pisteet >= RR_THRESHOLD
 # (7), myydään vasta kun ne putoavat alle EXIT_SCORE_THRESHOLD:in (5). Väliin
 # jäävä kaista 5-7 on tarkoituksellinen - jos osto- ja myyntiraja olisivat

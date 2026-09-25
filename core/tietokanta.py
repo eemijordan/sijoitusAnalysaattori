@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS technical_scores (
     indicators_json TEXT,
     rationale TEXT,
     stop_loss REAL,
+    stop_source TEXT,
     target_price REAL,
     rr_ratio REAL,
     created_at TEXT NOT NULL
@@ -411,6 +412,12 @@ def get_candidates(
         connection.close()
 
 
+# stop_source-sarakkeella ei ole CHECK-ehtoa (ks. CLAUDE.md: vaiheen D2
+# migraatio ei nae CHECK-ehtoja, joten se lisaisi sarakkeen tuotantokantaan
+# ilman ehtoa ja skeema erkanisi hiljaa) - arvot validoidaan siis tassa.
+_VALID_STOP_SOURCES = {"viikkopohja", "paivapohja", "katto"}
+
+
 def insert_score(
     run_id: str,
     run_type: str,
@@ -420,20 +427,28 @@ def insert_score(
     indicators_json: str | None = None,
     rationale: str | None = None,
     stop_loss: float | None = None,
+    stop_source: str | None = None,
     target_price: float | None = None,
     rr_ratio: float | None = None,
     db_path=DEFAULT_DB_PATH,
 ) -> int:
-    """Lisää rivin technical_scores-tauluun ja palauttaa sen id:n."""
+    """Lisää rivin technical_scores-tauluun ja palauttaa sen id:n.
+
+    Nostaa ValueErrorin jos stop_source ei ole None eika mikaan
+    _VALID_STOP_SOURCES-joukon arvoista.
+    """
+    if stop_source is not None and stop_source not in _VALID_STOP_SOURCES:
+        raise ValueError(f"tuntematon stop_source: {stop_source!r}")
+
     connection = open_connection(db_path)
     try:
         cursor = connection.execute(
             """
             INSERT INTO technical_scores (
                 run_id, run_type, symbol, risk_reward_score, price,
-                indicators_json, rationale, stop_loss, target_price, rr_ratio,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                indicators_json, rationale, stop_loss, stop_source,
+                target_price, rr_ratio, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -444,6 +459,7 @@ def insert_score(
                 indicators_json,
                 rationale,
                 stop_loss,
+                stop_source,
                 target_price,
                 rr_ratio,
                 datetime.now().isoformat(timespec="seconds"),
