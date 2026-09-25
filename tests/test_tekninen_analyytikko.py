@@ -746,6 +746,9 @@ def test_aja_kirjoittaa_pisteytysrivin_oikealla_ajo_idlla_ja_hinnalla(
         high_52w=180.0,
         low_52w=100.0,
         swing_low_weekly=140.0,
+        ema_fast=155.0,
+        ema_slow=145.0,
+        ema_cross_date="2026-06-01",
     )
 
     monkeypatch.setattr(
@@ -765,6 +768,9 @@ def test_aja_kirjoittaa_pisteytysrivin_oikealla_ajo_idlla_ja_hinnalla(
     assert rivit[0]["stop_source"] == "viikkopohja"
     assert rivit[0]["target_price"] == 180.0  # 52 viikon huippu
     assert rivit[0]["rr_ratio"] == 3.0  # (180-150) / (150-140)
+    assert rivit[0]["ema_fast"] == 155.0
+    assert rivit[0]["ema_slow"] == 145.0
+    assert rivit[0]["ema_cross_date"] == "2026-06-01"
 
 
 def test_aja_ohittaa_alle_min_osakekurssin_eika_kutsu_atr_rsi(tmp_path, monkeypatch):
@@ -1384,3 +1390,148 @@ def test_tarkistusajo_ei_muuta_position_omaa_ostohetken_stoppia(tmp_path, monkey
     assert uusi_pisteytys["symbol"] == "AAPL"
     assert uusi_pisteytys["stop_loss"] == 88.0  # eri kuin position oma stop
     assert uusi_pisteytys["stop_source"] == "viikkopohja"
+
+
+# --- calculate_ema(): puhdas logiikka, ei verkkoa eika tietokantaa (vaihe 3d) ---
+
+
+def test_ema_vakiosarja_antaa_saman_vakion():
+    sarja = [50.0] * 10
+
+    ema = tekninen_analyytikko.calculate_ema(sarja, period=3)
+
+    assert ema[2:] == [50.0] * 8
+
+
+def test_ema_kasin_laskettava_sarja():
+    # a = 2/(3+1) = 0.5. Alustus (1+2+3)/3 = 2. Sitten 0.5*4+0.5*2=3 ja
+    # 0.5*5+0.5*3=4.
+    sarja = [1.0, 2.0, 3.0, 4.0, 5.0]
+
+    ema = tekninen_analyytikko.calculate_ema(sarja, period=3)
+
+    assert ema == [None, None, 2.0, 3.0, 4.0]
+
+
+def test_ema_liian_lyhyt_sarja_palauttaa_pelkkia_noneja():
+    sarja = [1.0, 2.0]
+
+    ema = tekninen_analyytikko.calculate_ema(sarja, period=3)
+
+    assert ema == [None, None]
+
+
+# --- find_last_cross(): puhdas logiikka, ei verkkoa eika tietokantaa ---
+
+
+def test_cross_loytyy_ja_paivamaara_on_oikea():
+    paivat = ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]
+    fast = [5.0, 5.0, 3.0, 3.0]
+    slow = [4.0, 4.0, 4.0, 4.0]
+
+    risteys = tekninen_analyytikko.find_last_cross(fast, slow, paivat)
+
+    assert risteys == "2026-01-03"
+
+
+def test_cross_ensin_ylos_sitten_alas_palauttaa_viimeisimman():
+    paivat = ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]
+    fast = [3.0, 5.0, 5.0, 3.0]
+    slow = [4.0, 4.0, 4.0, 4.0]
+
+    risteys = tekninen_analyytikko.find_last_cross(fast, slow, paivat)
+
+    assert risteys == "2026-01-04"  # viimeisin on alaspain
+
+
+def test_cross_ei_risteysta_palauttaa_nonen():
+    paivat = ["2026-01-01", "2026-01-02", "2026-01-03"]
+    fast = [5.0, 5.0, 5.0]
+    slow = [4.0, 4.0, 4.0]
+
+    risteys = tekninen_analyytikko.find_last_cross(fast, slow, paivat)
+
+    assert risteys is None
+
+
+def test_cross_alun_none_arvot_ohitetaan():
+    paivat = ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]
+    fast = [None, None, 5.0, 3.0]
+    slow = [None, 4.0, 4.0, 4.0]
+
+    risteys = tekninen_analyytikko.find_last_cross(fast, slow, paivat)
+
+    assert risteys == "2026-01-04"
+
+
+def test_cross_tasatilanne_ei_ole_alapuolella():
+    paivat = ["2026-01-01", "2026-01-02", "2026-01-03"]
+    fast = [5.0, 4.0, 3.0]
+    slow = [4.0, 4.0, 4.0]
+
+    risteys = tekninen_analyytikko.find_last_cross(fast, slow, paivat)
+
+    assert risteys == "2026-01-03"  # ei toisena paivana, koska 4 == 4 ei ole alle
+
+
+# --- EMA-historia (1000 pv) ei vaikuta muihin laskelmiin (vaihe 3d) ---
+
+
+def _synteettiset_paivapalkit(maara, viimeisin_paiva):
+    """Luo Twelve Data -tyyliset palkit uusin ensin, hinta kasvaa iän mukana.
+
+    Palkki 0 (uusin) on aina hinnaltaan 100 - vain vanhemmat palkit
+    (indeksi > 251) ovat kalliimpia, joten 252 uusimman palkin huippu on
+    todistettavasti eri kuin koko 1000 palkin huippu.
+    """
+    from datetime import timedelta
+
+    palkit = []
+    for i in range(maara):
+        paiva = viimeisin_paiva - timedelta(days=i)
+        hinta = 100.0 + i * 0.5
+        palkit.append(
+            _paivapalkki(paiva.isoformat(), close=hinta, high=hinta + 1, low=hinta - 1)
+        )
+    return palkit
+
+
+def test_ema_haku_ei_muuta_muita_laskelmia_1000_vs_252(monkeypatch):
+    tanaan = date(2026, 9, 4)
+    eilen = date(2026, 9, 3)
+    kiintea_nyt = datetime(
+        tanaan.year,
+        tanaan.month,
+        tanaan.day,
+        11,
+        0,
+        tzinfo=ZoneInfo("America/New_York"),
+    )
+    palkit = _synteettiset_paivapalkit(1000, viimeisin_paiva=eilen)
+
+    monkeypatch.setattr(tekninen_analyytikko, "datetime", _KiinteaKello(kiintea_nyt))
+    monkeypatch.setattr(
+        tekninen_analyytikko, "get_twelve_data_key", lambda: "testiavain"
+    )
+    monkeypatch.setattr(
+        tekninen_analyytikko,
+        "_fetch_twelvedata_json",
+        lambda url, params: _time_series_vastaus(palkit),
+    )
+
+    price_data = tekninen_analyytikko.fetch_price_data("AAPL")
+    suoraan_252 = tekninen_analyytikko._calculate_price_stats(
+        palkit[: tekninen_analyytikko.PRICE_HISTORY_DAYS]
+    )
+
+    assert price_data["high_52w"] == suoraan_252["high_52w"]
+    assert price_data["sma50"] == suoraan_252["sma50"]
+    assert price_data["sma200"] == suoraan_252["sma200"]
+    assert price_data["swing_low_weekly"] == suoraan_252["swing_low_weekly"]
+    assert price_data["swing_low_daily"] == suoraan_252["swing_low_daily"]
+    assert price_data["history_days"] == tekninen_analyytikko.PRICE_HISTORY_DAYS
+
+    # Todistaa etta 1000 palkkia oikeasti haettiin eika vain 252: koko
+    # sarjan huippu on paljon korkeampi kuin 252 uusimman palkin huippu.
+    kaikkien_huippu = max(float(p["high"]) for p in palkit)
+    assert kaikkien_huippu > price_data["high_52w"]

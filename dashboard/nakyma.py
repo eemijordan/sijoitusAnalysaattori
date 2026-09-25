@@ -193,7 +193,7 @@ with ylarivi[2], st.container(border=True):
                 "quantity": "Määrä",
                 "stake_usd": "Panos (USD)",
                 "stop_loss": "Stop",
-                "target_price": "Tavoite",
+                "target_price": "52 vk huippu",
                 "buy_date": "Ostettu",
             }
         )
@@ -299,7 +299,7 @@ else:
                     "price": "Hinta",
                     "stop_loss": "Stop",
                     "stop_source": "Stop-peruste",
-                    "target_price": "Tavoite",
+                    "target_price": "52 vk huippu",
                     "rr_ratio": "RR-suhde",
                 }
             )

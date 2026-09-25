@@ -67,12 +67,17 @@ SWING_MIN_MOVE_DAILY = 0.05
 # Jos yksikään pohja ei ole tämän etäisyyden sisällä, stop asetetaan tähän
 # kattoon hinnasta.
 STOP_MAX_DISTANCE = 0.20
-# Hystereesi, ei sattumanvarainen luku: ostetaan kun pisteet >= RR_THRESHOLD
-# (7), myydään vasta kun ne putoavat alle EXIT_SCORE_THRESHOLD:in (5). Väliin
-# jäävä kaista 5-7 on tarkoituksellinen - jos osto- ja myyntiraja olisivat
-# sama luku, seitsemän pisteen tuntumassa värähtelevä osake ostettaisiin ja
-# myytäisiin vuorotellen joka tarkistuksessa. Kaista poistaa sen kokonaan.
-EXIT_SCORE_THRESHOLD = 5
+# EMA-historia haetaan pidemmältä ajalta kuin muut laskelmat (ks. CLAUDE.md,
+# vaihe 3d): EMA alustetaan ensimmäisten päivien keskiarvolla, ja alustuksen
+# vaikutus hiipuu vasta vähitellen - 1000 päivää pitää EMA100:n tarkkana
+# myös jos jaksoa myöhemmin pidennetään. Vain EMA:t käyttävät koko sarjaa,
+# muut laskelmat (SMA:t, 52 viikon huippu, vaiheen 2j pohjat) pysyvät
+# 252 uusimmassa päivässä.
+EMA_HISTORY_DAYS = 1000
+# EMA20/EMA100 valittiin EMA20/EMA200:n sijaan, jotta myyntisääntö reagoi
+# trendin taittumiseen nopeammin.
+EMA_FAST_PERIOD = 20
+EMA_SLOW_PERIOD = 100
 # Hajauttaa sisaanmenot ajassa. Ilman rajaa salkku tayttyy noin neljassa
 # ajossa eli kahdessa viikossa, jolloin koko salkku edustaa yhta
 # markkinatilannetta eika tuloksesta voi paatella mallista mitaan.

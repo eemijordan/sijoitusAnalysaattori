@@ -287,6 +287,97 @@ def test_init_database_lisaa_stop_sourcen_vanhaan_kantaan_rivit_sailyvat(db_polk
     assert rivit[0]["stop_source"] is None  # vanhalle riville ei keksita perustetta
 
 
+# --- technical_scores.ema_fast/ema_slow/ema_cross_date (vaihe 3d) ---
+
+
+def test_pisteytys_tallentaa_ema_kentat(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=8,
+        price=100.0,
+        ema_fast=95.0,
+        ema_slow=90.0,
+        ema_cross_date="2026-06-01",
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_scores("ajo1", db_path=db_polku)
+    assert rivit[0]["ema_fast"] == 95.0
+    assert rivit[0]["ema_slow"] == 90.0
+    assert rivit[0]["ema_cross_date"] == "2026-06-01"
+
+
+def test_pisteytys_ilman_ema_parametreja_tallentaa_nonet(db_polku):
+    tietokanta.init_database(db_polku)
+
+    tietokanta.insert_score(
+        run_id="ajo1",
+        run_type="normaali",
+        symbol="AAPL",
+        risk_reward_score=8,
+        price=100.0,
+        db_path=db_polku,
+    )
+
+    rivit = tietokanta.get_scores("ajo1", db_path=db_polku)
+    assert rivit[0]["ema_fast"] is None
+    assert rivit[0]["ema_slow"] is None
+    assert rivit[0]["ema_cross_date"] is None
+
+
+def test_init_database_lisaa_ema_sarakkeet_vanhaan_kantaan_rivit_sailyvat(db_polku):
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            """
+            CREATE TABLE technical_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                run_type TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                risk_reward_score REAL NOT NULL,
+                price REAL,
+                indicators_json TEXT,
+                rationale TEXT,
+                stop_loss REAL,
+                stop_source TEXT,
+                target_price REAL,
+                rr_ratio REAL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        yhteys.execute(
+            """
+            INSERT INTO technical_scores (
+                run_id, run_type, symbol, risk_reward_score, price, created_at
+            ) VALUES ('ajo1', 'normaali', 'AAPL', 8, 100.0, '2026-09-01T00:00:00')
+            """
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    lisatyt = tietokanta.init_database(db_polku)
+
+    assert set(lisatyt) == {
+        "technical_scores.ema_fast",
+        "technical_scores.ema_slow",
+        "technical_scores.ema_cross_date",
+    }
+
+    rivit = tietokanta.get_scores("ajo1", db_path=db_polku)
+    assert len(rivit) == 1
+    assert rivit[0]["price"] == 100.0  # vanha rivi sailyy koskemattomana
+    assert rivit[0]["ema_fast"] is None
+    assert rivit[0]["ema_slow"] is None
+    assert rivit[0]["ema_cross_date"] is None
+
+
 # --- get_cooldown_symbols(): vaihe 3c ---
 
 

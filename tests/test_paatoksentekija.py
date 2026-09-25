@@ -5,7 +5,8 @@ import pytest
 from agents import paatoksentekija
 from core import tietokanta
 from core.asetukset import (
-    EXIT_SCORE_THRESHOLD,
+    EMA_FAST_PERIOD,
+    EMA_SLOW_PERIOD,
     MAX_BUYS_PER_RUN,
     MAX_POSITIONS,
     POSITION_SIZE,
@@ -14,11 +15,21 @@ from core.asetukset import (
 )
 
 
-def _score(symbol="AAPL", risk_reward_score=8.0, price=100.0):
+def _score(
+    symbol="AAPL",
+    risk_reward_score=8.0,
+    price=100.0,
+    ema_fast=110.0,
+    ema_slow=100.0,
+    ema_cross_date=None,
+):
     return {
         "symbol": symbol,
         "risk_reward_score": risk_reward_score,
         "price": price,
+        "ema_fast": ema_fast,
+        "ema_slow": ema_slow,
+        "ema_cross_date": ema_cross_date,
     }
 
 
@@ -42,8 +53,18 @@ def _state(
     }
 
 
-def _position(symbol="AAPL", stop_loss=None, target_price=None):
-    return {"symbol": symbol, "stop_loss": stop_loss, "target_price": target_price}
+def _position(
+    symbol="AAPL",
+    stop_loss=None,
+    target_price=None,
+    buy_date="2026-01-01T00:00:00",
+):
+    return {
+        "symbol": symbol,
+        "stop_loss": stop_loss,
+        "target_price": target_price,
+        "buy_date": buy_date,
+    }
 
 
 # --- decide_buy(): puhdas logiikka, ei tietokantaa eika verkkoa ---
@@ -220,58 +241,30 @@ def test_kovat_rajat_tarkistetaan_ennen_ostorajaa():
 
 
 # --- decide_hold_or_sell(): puhdas logiikka, ei tietokantaa eika verkkoa ---
+#
+# Vaihe 3d poisti tavoitehinta- ja pisterajaehdot kokonaan (ks. CLAUDE.md):
+# kiinteä tuottotavoite katkaisisi nousun kesken, ja ostohetken laatupisteet
+# (risk_reward_score) rankaisevat juuri vahvaa nousua. Vanhat testit korvautuvat
+# nain:
+# - test_hinta_tavoitteessa_tai_yli_myy, test_stop_puuttuu_tavoite_osuu_myy
+#   -> test_regressio_tavoitehinta_ei_enaa_aiheuta_myyntia (kohta 17)
+# - test_pisteet_alle_exit_kynnyksen_myy
+#   -> test_regressio_matalat_pisteet_eivat_enaa_aiheuta_myyntia (kohta 18)
+# - test_pisteet_hystereesikaistalla_pitaa, test_pisteet_yli_rr_kynnyksen_pitaa
+#   -> hystereesi RR_THRESHOLD:n ja EXIT_SCORE_THRESHOLD:n valilla ei ole enaa
+#      olemassa (EXIT_SCORE_THRESHOLD poistettu), joten kaista-kasite ei kuvaa
+#      mitaan tilannetta talla saannolla - ks. sen sijaan
+#      test_trendi_jatkuu_ema_fast_yli_pitaa (kohta 13) ja kohdat 17-18.
 
 
 def test_hinta_stopin_alla_myy():
     position = _position(stop_loss=100.0)
-    score = _score(price=95.0, risk_reward_score=10.0)
+    score = _score(price=95.0)
 
     decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
 
     assert decision == "myy"
     assert "stop" in rationale.lower()
-
-
-def test_hinta_tavoitteessa_tai_yli_myy():
-    position = _position(target_price=120.0)
-    score = _score(price=120.0, risk_reward_score=10.0)
-
-    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
-
-    assert decision == "myy"
-    assert "tavoite" in rationale.lower()
-
-
-def test_pisteet_alle_exit_kynnyksen_myy():
-    position = _position()
-    score = _score(price=100.0, risk_reward_score=EXIT_SCORE_THRESHOLD - 1)
-
-    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
-
-    assert decision == "myy"
-    assert "EXIT_SCORE_THRESHOLD" in rationale
-
-
-def test_pisteet_hystereesikaistalla_pitaa():
-    # Todistaa hystereesin: RR_THRESHOLD=7 (ostoraja) ja EXIT_SCORE_THRESHOLD=5
-    # (myyntiraja) ovat eri lukuja tarkoituksella. Pisteet 6 ovat kaistan
-    # sisalla - jos osto- ja myyntiraja olisivat sama luku, tama osake
-    # ostettaisiin ja myytaisiin vuorotellen joka tarkistuksessa.
-    position = _position()
-    score = _score(price=100.0, risk_reward_score=6.0)
-
-    decision, _ = paatoksentekija.decide_hold_or_sell(position, score)
-
-    assert decision == "pida"
-
-
-def test_pisteet_yli_rr_kynnyksen_pitaa():
-    position = _position()
-    score = _score(price=100.0, risk_reward_score=RR_THRESHOLD + 1)
-
-    decision, _ = paatoksentekija.decide_hold_or_sell(position, score)
-
-    assert decision == "pida"
 
 
 def test_score_none_pitaa():
@@ -293,35 +286,136 @@ def test_hinta_puuttuu_pisteytyksesta_pitaa():
     assert "puuttu" in rationale
 
 
-def test_stop_puuttuu_tavoite_osuu_myy():
-    position = _position(stop_loss=None, target_price=120.0)
-    score = _score(price=125.0, risk_reward_score=10.0)
+def test_trendi_paattyi_risteys_oston_jalkeen_myy():
+    position = _position(buy_date="2026-01-01T00:00:00")
+    score = _score(
+        price=100.0, ema_fast=90.0, ema_slow=100.0, ema_cross_date="2026-02-01"
+    )
 
     decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
 
     assert decision == "myy"
-    assert "tavoite" in rationale.lower()
+    assert f"EMA{EMA_FAST_PERIOD}" in rationale
+    assert f"EMA{EMA_SLOW_PERIOD}" in rationale
+    assert "2026-02-01" in rationale
 
 
-def test_stop_ja_tavoite_puuttuvat_pisteet_hyvat_pitaa():
-    position = _position(stop_loss=None, target_price=None)
-    score = _score(price=100.0, risk_reward_score=10.0)
+def test_risteys_ostopaivana_myy():
+    position = _position(buy_date="2026-01-01T14:17:02")
+    score = _score(
+        price=100.0, ema_fast=90.0, ema_slow=100.0, ema_cross_date="2026-01-01"
+    )
+
+    decision, _ = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "myy"
+
+
+def test_risteys_ennen_ostoa_pitaa():
+    position = _position(buy_date="2026-01-10T00:00:00")
+    score = _score(
+        price=100.0, ema_fast=90.0, ema_slow=100.0, ema_cross_date="2025-12-01"
+    )
+
+    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "pida"
+    assert "2026-01-10" in rationale
+
+
+def test_ema_cross_date_none_pitaa():
+    # Nopea EMA on alle mutta risteysta ei ole havaittu koko sarjan aikana
+    # (find_last_cross palauttaa None) - eli emme tieda oliko se jo alla
+    # ennen ostoa. Ei myyda tuntemattoman perusteella.
+    position = _position(buy_date="2026-01-01T00:00:00")
+    score = _score(price=100.0, ema_fast=90.0, ema_slow=100.0, ema_cross_date=None)
 
     decision, _ = paatoksentekija.decide_hold_or_sell(position, score)
 
     assert decision == "pida"
 
 
-def test_stop_voittaa_hyvat_pisteet():
-    # Stop tarkistetaan ennen pisteita: jos kurssi on rikkonut stopin, silla
-    # ei ole valia miltä pisteet nayttavat - riskiraja on riskiraja.
-    position = _position(stop_loss=100.0)
-    score = _score(price=95.0, risk_reward_score=10.0)
+def test_trendi_jatkuu_ema_fast_yli_pitaa():
+    position = _position()
+    score = _score(price=100.0, ema_fast=110.0, ema_slow=100.0)
+
+    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "pida"
+    assert f"EMA{EMA_FAST_PERIOD}" in rationale
+    assert f"EMA{EMA_SLOW_PERIOD}" in rationale
+
+
+def test_epasaannollinen_ajo_risteys_kolme_paivaa_sitten_myy():
+    # Todistaa etta saanto kestaa epasaannolliset ajot: risteys ei osunut
+    # millekaan ajopaivalle, mutta se on silti ostopaivan jalkeen, joten
+    # seuraava tarkistus - riippumatta valissa olleiden paivien maarasta -
+    # myy silti.
+    position = _position(buy_date="2026-01-01T00:00:00")
+    score = _score(
+        price=100.0, ema_fast=90.0, ema_slow=100.0, ema_cross_date="2026-03-19"
+    )
+
+    decision, _ = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "myy"
+
+
+def test_ema_data_puuttuu_pitaa():
+    position = _position()
+    score = _score(price=100.0, ema_fast=None, ema_slow=None)
+
+    decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "pida"
+    assert "vain stop suojaa" in rationale
+
+
+def test_stop_voittaa_risteytyneen_trendin():
+    # Stop tarkistetaan ennen trendiehtoa: jos kurssi on rikkonut stopin,
+    # silla ei ole valia missa EMA:t ovat - riskiraja on riskiraja.
+    position = _position(stop_loss=100.0, buy_date="2026-01-01T00:00:00")
+    score = _score(
+        price=95.0, ema_fast=90.0, ema_slow=100.0, ema_cross_date="2026-02-01"
+    )
 
     decision, rationale = paatoksentekija.decide_hold_or_sell(position, score)
 
     assert decision == "myy"
     assert "stop" in rationale.lower()
+    assert "trendi" not in rationale.lower()
+
+
+def test_regressio_tavoitehinta_ei_enaa_aiheuta_myyntia():
+    # target_price tallennetaan ja luetaan silti (52 viikon huippu, tietoa
+    # varten) mutta ei enaa vaikuta paatokseen.
+    position = _position(target_price=120.0, stop_loss=None)
+    score = _score(price=500.0, ema_fast=110.0, ema_slow=100.0)
+
+    decision, _ = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "pida"
+
+
+def test_regressio_matalat_pisteet_eivat_enaa_aiheuta_myyntia():
+    position = _position()
+    score = _score(price=100.0, risk_reward_score=3.0, ema_fast=110.0, ema_slow=100.0)
+
+    decision, _ = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert decision == "pida"
+
+
+def test_perustelu_kayttaa_vakioiden_jaksoja(monkeypatch):
+    monkeypatch.setattr(paatoksentekija, "EMA_SLOW_PERIOD", 50)
+
+    position = _position()
+    score = _score(price=100.0, ema_fast=110.0, ema_slow=100.0)
+
+    _, rationale = paatoksentekija.decide_hold_or_sell(position, score)
+
+    assert "EMA20" in rationale
+    assert "EMA50" in rationale
 
 
 # --- run(): tietokannan kanssa, lahtodata kirjoitettu suoraan kantaan ---

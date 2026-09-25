@@ -4,7 +4,8 @@ from datetime import date
 
 from core import loki, tietokanta
 from core.asetukset import (
-    EXIT_SCORE_THRESHOLD,
+    EMA_FAST_PERIOD,
+    EMA_SLOW_PERIOD,
     INITIAL_CAPITAL,
     MAX_BUYS_PER_RUN,
     MAX_POSITIONS,
@@ -125,11 +126,26 @@ def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, s
 
 
 def decide_hold_or_sell(position: dict, score: dict | None) -> tuple[str, str]:
-    """Soveltaa 5 pito/myynti-ehtoa järjestyksessä ja palauttaa (päätös, perustelu).
+    """Soveltaa pito/myynti-ehdot järjestyksessä ja palauttaa (päätös, perustelu).
 
-    Päätös on 'pida' tai 'myy'. Ensimmäinen täyttyvä ehto ratkaisee. Stop ja
-    tavoite tarkistetaan ennen pisteitä - jos kurssi on rikkonut stopin,
-    sillä ei ole väliä miltä pisteet näyttävät, riskiraja on riskiraja.
+    Päätös on 'pida' tai 'myy'. Ensimmäinen täyttyvä ehto ratkaisee:
+
+    1. ei tuoretta pisteytystä tai hintaa -> pidä.
+    2. stop-loss osui -> myy.
+    3. trendi päättyi (EMA_FAST_PERIODin EMA laski EMA_SLOW_PERIODin EMA:n
+       alle ostopäivänä tai sen jälkeen) -> myy.
+    4. muuten -> pidä.
+
+    Stop tarkistetaan ennen trendiehtoa - jos kurssi on rikkonut stopin,
+    sillä ei ole väliä missä EMA:t ovat, riskiraja on riskiraja.
+
+    Ei enää tavoitehintaa eikä pisterajaa (ks. CLAUDE.md, vaihe 3d): kiinteä
+    tuottotavoite katkaisisi nousun kesken, ja ostohetken laatupisteet
+    (risk_reward_score) rankaisevat juuri vahvaa nousua - venynyt asema
+    52 viikon vaihteluvälissä ja korkea RSI pudottavat pisteitä täsmälleen
+    silloin kun osake on kovimmassa nousussaan. Huono ostohetki ei ole hyvä
+    myyntihetki, joten ostopisteitä ei voi käyttää myyntisignaalina. Myynti
+    tapahtuu siis vain kahdella tavalla: stop osuu tai trendi päättyy.
     """
     price = score.get("price") if score else None
 
@@ -153,23 +169,51 @@ def decide_hold_or_sell(position: dict, score: dict | None) -> tuple[str, str]:
     if stop_loss is not None and price <= stop_loss:
         return "myy", f"stop-loss osui: hinta {price:.2f} <= stop {stop_loss:.2f}"
 
-    # 3. tavoitehinta.
-    target_price = position.get("target_price")
-    if target_price is not None and price >= target_price:
+    # 3. trendi paattyi: nopea EMA on hitaan EMA:n alla, ja risteys tapahtui
+    # ostopaivana tai sen jalkeen. Paivamaaravertailu estaa sen etta positio
+    # joka ostettiin EMA:n ollessa jo alla myytaisiin heti seuraavassa
+    # tarkistuksessa - sellainen myydaan vasta kun nopea EMA on ensin
+    # noussut ostohetken ylapuolelle ja sitten laskenut takaisin alle.
+    # Siihen asti stop suojaa. buy_date on aikaleima (esim.
+    # "2026-09-07T14:17:02"), joten vain paivamaaraosuus ([:10]) vertaillaan
+    # ema_cross_date:n kanssa.
+    ema_fast = score.get("ema_fast")
+    ema_slow = score.get("ema_slow")
+
+    if ema_fast is None or ema_slow is None:
         return (
-            "myy",
-            f"tavoite saavutettu: hinta {price:.2f} >= tavoite {target_price:.2f}",
+            "pida",
+            f"EMA-dataa ei ole (historiaa alle {EMA_SLOW_PERIOD} paivaa), "
+            f"vain stop suojaa",
         )
 
-    # 4. pisteet pudonneet exit-kynnyksen alle (hystereesi, ks. asetukset.py).
-    rr = score.get("risk_reward_score")
-    if rr is not None and rr < EXIT_SCORE_THRESHOLD:
-        return "myy", f"pisteet {rr} < EXIT_SCORE_THRESHOLD {EXIT_SCORE_THRESHOLD}"
+    ema_cross_date = score.get("ema_cross_date")
+    buy_date = position.get("buy_date")
+    buy_date_only = buy_date[:10] if buy_date else None
+
+    if (
+        ema_fast < ema_slow
+        and ema_cross_date is not None
+        and buy_date_only is not None
+        and ema_cross_date >= buy_date_only
+    ):
+        return (
+            "myy",
+            f"trendi paattyi: EMA{EMA_FAST_PERIOD} {ema_fast:.2f} alitti "
+            f"EMA{EMA_SLOW_PERIOD}:n {ema_slow:.2f} paivana {ema_cross_date}",
+        )
+
+    if ema_fast >= ema_slow:
+        return (
+            "pida",
+            f"trendi jatkuu: EMA{EMA_FAST_PERIOD} {ema_fast:.2f} >= "
+            f"EMA{EMA_SLOW_PERIOD} {ema_slow:.2f}",
+        )
 
     return (
         "pida",
-        f"pisteet {rr} >= EXIT_SCORE_THRESHOLD {EXIT_SCORE_THRESHOLD}, "
-        f"stop ja tavoite eivat osuneet",
+        f"EMA{EMA_FAST_PERIOD} alle EMA{EMA_SLOW_PERIOD}:n jo ostohetkella "
+        f"({buy_date_only}), odotetaan nousua",
     )
 
 

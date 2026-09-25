@@ -10,6 +10,9 @@ import requests
 from core import loki, tietokanta
 from core.asetukset import (
     BENCHMARK_SYMBOL,
+    EMA_FAST_PERIOD,
+    EMA_HISTORY_DAYS,
+    EMA_SLOW_PERIOD,
     MIN_DAILY_TURNOVER,
     MIN_SHARE_PRICE,
     STOP_MAX_DISTANCE,
@@ -305,11 +308,75 @@ def _calculate_price_stats(bars: list[dict]) -> dict:
     }
 
 
+def _closes_oldest_first(bars: list[dict]) -> tuple[list[str], list[float]]:
+    """Palauttaa (päivämäärät, päätöskurssit) vanhimmasta uusimpaan.
+
+    Sama suunnanvaihdon periaate kuin _normalize_bars_oldest_first():n
+    high/low-versiossa - Twelve Data palauttaa palkit uusin ensin.
+    """
+    normalized = sorted(
+        ((bar["datetime"][:10], float(bar["close"])) for bar in bars),
+        key=lambda item: item[0],
+    )
+    dates_oldest_first = [item[0] for item in normalized]
+    closes_oldest_first = [item[1] for item in normalized]
+    return dates_oldest_first, closes_oldest_first
+
+
+def calculate_ema(closes_oldest_first: list[float], period: int) -> list[float | None]:
+    """Palauttaa EMA-sarjan (vanhimmasta uusimpaan); None kunnes EMA on määritelty.
+
+    Tavanomainen määritelmä: alustus ensimmäisen `period` päätöskurssin
+    keskiarvolla indeksiin period-1, sen jälkeen
+    ema = a * close + (1-a) * ema_edellinen, missä a = 2/(period+1).
+    Käyttää päätöskurssia, kuten TradingViewn oletus.
+    """
+    history_length = len(closes_oldest_first)
+    result: list[float | None] = [None] * history_length
+    if history_length < period:
+        return result
+
+    alpha = 2 / (period + 1)
+    ema = sum(closes_oldest_first[:period]) / period
+    result[period - 1] = ema
+    for i in range(period, history_length):
+        ema = alpha * closes_oldest_first[i] + (1 - alpha) * ema
+        result[i] = ema
+    return result
+
+
+def find_last_cross(
+    fast: list[float | None], slow: list[float | None], dates: list[str]
+) -> str | None:
+    """Palauttaa viimeisimmän päivän jona fast siirtyi slow:n ylä- tai alapuolelle.
+
+    "Alapuolella" tarkoittaa fast < slow - tasatilanne ei ole alapuolella.
+    Päivät joilla jompikumpi on None ohitetaan (ne eivät kaanna tilaa).
+    Palauttaa None jos tila ei ole vaihtunut koko sarjan aikana.
+    """
+    last_cross_date = None
+    previous_below = None
+    for fast_value, slow_value, current_date in zip(fast, slow, dates):
+        if fast_value is None or slow_value is None:
+            continue
+        below = fast_value < slow_value
+        if previous_below is not None and below != previous_below:
+            last_cross_date = current_date
+        previous_below = below
+    return last_cross_date
+
+
 def fetch_price_data(symbol: str) -> dict | None:
-    """Hakee 252 päivän kurssihistorian ja laskee siitä tunnusluvut.
+    """Hakee kurssihistorian ja laskee siitä tunnusluvut.
 
     Nostaa IncompletePriceDataError:in jos uusin palkki on kesken oleva
     pörssipäivä. Palauttaa None jos Twelve Data ei palauttanut dataa lainkaan.
+
+    Haku kattaa EMA_HISTORY_DAYS (1000) päivää yhdellä kutsulla, koska
+    EMA100 tarvitsee pitkän alustusjakson jotta alkuarvon vaikutus on
+    hävinnyt (ks. CLAUDE.md, vaihe 3d). Kaikki muu (SMA:t, 52 viikon huippu,
+    vaiheen 2j pohjat) lasketaan silti täsmälleen samoista PRICE_HISTORY_DAYS
+    (252) uusimmasta palkista kuin ennen - vain EMA:t käyttävät koko sarjaa.
     """
     apikey = get_twelve_data_key()
     data = _fetch_twelvedata_json(
@@ -317,7 +384,7 @@ def fetch_price_data(symbol: str) -> dict | None:
         {
             "symbol": symbol,
             "interval": "1day",
-            "outputsize": PRICE_HISTORY_DAYS,
+            "outputsize": EMA_HISTORY_DAYS,
             "apikey": apikey,
         },
     )
@@ -351,7 +418,18 @@ def fetch_price_data(symbol: str) -> dict | None:
         _loki.error(f"{symbol}: {reason}")
         raise IncompletePriceDataError(f"{symbol}: {reason}")
 
-    return _calculate_price_stats(bars)
+    price_data = _calculate_price_stats(bars[:PRICE_HISTORY_DAYS])
+
+    dates_oldest_first, closes_oldest_first = _closes_oldest_first(bars)
+    ema_fast_series = calculate_ema(closes_oldest_first, EMA_FAST_PERIOD)
+    ema_slow_series = calculate_ema(closes_oldest_first, EMA_SLOW_PERIOD)
+    price_data["ema_fast"] = ema_fast_series[-1]
+    price_data["ema_slow"] = ema_slow_series[-1]
+    price_data["ema_cross_date"] = find_last_cross(
+        ema_fast_series, ema_slow_series, dates_oldest_first
+    )
+
+    return price_data
 
 
 def _extract_indicator_value(data: dict, key: str) -> float | None:
@@ -760,6 +838,9 @@ def run(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
             stop_source=stop_source,
             target_price=target_price,
             rr_ratio=rr_ratio,
+            ema_fast=price_data.get("ema_fast"),
+            ema_slow=price_data.get("ema_slow"),
+            ema_cross_date=price_data.get("ema_cross_date"),
             db_path=db_path,
         )
         recorded += 1
