@@ -85,7 +85,12 @@ MAX_BUYS_PER_RUN = 2
 # Stop laukesi koska saanto sanoi etta veto oli vaara. Saman vedon
 # asettaminen uudelleen muutaman paivan paasta maksaa saman tappion
 # toistamiseen. 30 vrk on riittavan pitka katkaisemaan putoavan puukon ja
-# riittavan lyhyt salliakseen aidon paluun myohemmin.
+# riittavan lyhyt salliakseen aidon paluun myohemmin. Jaahy ohitetaan jos
+# nousutrendi alkaa uudelleen myynnin jalkeen (EMA_FAST_PERIODin EMA nousee
+# EMA_SLOW_PERIODin EMA:n yli myyntipaivana tai sen jalkeen, vaihe 3e) -
+# silloin kyse ei ole enaa samasta vedosta. Sama vakio maaraa myos myytyjen
+# seurannan keston (Agentti 1): seuranta = jaahy, jotta seurattavaa ei voi
+# ostaa pelkilla pisteilla jaahyn paatyttya.
 REPURCHASE_COOLDOWN_DAYS = 30
 # Twelve Data ei tarjoa indekseja itsessaan, joten S&P 500:n korvikkeena
 # kaytetaan sita seuraavaa ETF:aa. Vertailukohdan pitaa olla se mihin raha

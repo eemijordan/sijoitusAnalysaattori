@@ -10,7 +10,6 @@ from core.asetukset import (
     MAX_BUYS_PER_RUN,
     MAX_POSITIONS,
     POSITION_SIZE,
-    REPURCHASE_COOLDOWN_DAYS,
     RR_THRESHOLD,
 )
 
@@ -42,15 +41,19 @@ def _state(
     cash=10000.0,
     active_symbols=None,
     buys_this_run=0,
-    cooldown_until=None,
+    cooldowns=None,
 ):
     return {
         "active_count": active_count,
         "cash": cash,
         "active_symbols": active_symbols or set(),
         "buys_this_run": buys_this_run,
-        "cooldown_until": cooldown_until or {},
+        "cooldowns": cooldowns or {},
     }
+
+
+def _cooldown(until="2026-10-05", sold_on="2026-09-05"):
+    return {"until": until, "sold_on": sold_on}
 
 
 def _position(
@@ -180,21 +183,162 @@ def test_rr_tarkistetaan_ennen_kapasiteettia():
 
 
 def test_jaahylla_oleva_symboli_hylataan():
-    state = _state(cooldown_until={"AAPL": "2026-10-05"})
+    state = _state(cooldowns={"AAPL": _cooldown()})
 
     decision, rationale = paatoksentekija.decide_buy(_score(), _candidate(), state)
 
     assert decision == "hylatty"
-    assert "2026-10-05" in rationale
-    assert f"REPURCHASE_COOLDOWN_DAYS {REPURCHASE_COOLDOWN_DAYS}" in rationale
+    assert "jaahylla 2026-10-05 asti" in rationale
 
 
 def test_symboli_ei_jaahylla_menee_lapi_normaalisti():
-    state = _state(cooldown_until={"MSFT": "2026-10-05"})
+    # Kohta 9 (regressio): symboli joka ei ole jaahylla -> kaytos ennallaan,
+    # perustelussa ei mainita jaahya lainkaan.
+    state = _state(cooldowns={"MSFT": _cooldown()})
 
-    decision, _ = paatoksentekija.decide_buy(_score(symbol="AAPL"), _candidate(), state)
+    decision, rationale = paatoksentekija.decide_buy(
+        _score(symbol="AAPL", ema_cross_date="2026-09-20"), _candidate(), state
+    )
+    decision_ilman, rationale_ilman = paatoksentekija.decide_buy(
+        _score(symbol="AAPL", ema_cross_date="2026-09-20"), _candidate(), _state()
+    )
 
     assert decision == "osta"
+    assert "jaahy" not in rationale
+    assert (decision, rationale) == (decision_ilman, rationale_ilman)
+
+
+# --- decide_buy(): jaahyn ohitus kun nousutrendi alkaa uudelleen (vaihe 3e) ---
+#
+# Symboli myyty 2026-09-05 (10 paivaa ennen "tanaan" 2026-09-15), jaahy
+# 2026-10-05 asti.
+
+
+def test_jaahy_ohitetaan_kun_risteys_myynnin_jalkeen():
+    score = _score(ema_fast=110.0, ema_slow=100.0, ema_cross_date="2026-09-10")
+    state = _state(cooldowns={"AAPL": _cooldown()})
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "osta"
+    assert (
+        f"jaahy ohitettu: EMA{EMA_FAST_PERIOD} nousi EMA{EMA_SLOW_PERIOD}:n yli "
+        f"2026-09-10, myynnin (2026-09-05) jalkeen"
+    ) in rationale
+
+
+def test_jaahy_ohitetaan_kun_risteys_myyntipaivana():
+    # Raja sisaltyy: myyntipaivan risteys syntyi myyntia seuraavassa sessiossa.
+    score = _score(ema_fast=110.0, ema_slow=100.0, ema_cross_date="2026-09-05")
+    state = _state(cooldowns={"AAPL": _cooldown()})
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "osta"
+    assert "jaahy ohitettu" in rationale
+    assert "2026-09-05" in rationale
+
+
+def test_jaahy_pysyy_kun_risteys_ennen_myyntia():
+    score = _score(ema_fast=110.0, ema_slow=100.0, ema_cross_date="2026-08-20")
+    state = _state(cooldowns={"AAPL": _cooldown()})
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "hylatty"
+    assert rationale == (
+        "jaahylla 2026-10-05 asti; viimeisin risteys 2026-08-20 "
+        "ennen myyntia (2026-09-05)"
+    )
+
+
+def test_jaahy_pysyy_kun_ema_nopea_alle():
+    score = _score(ema_fast=95.0, ema_slow=100.0, ema_cross_date="2026-08-20")
+    state = _state(cooldowns={"AAPL": _cooldown()})
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "hylatty"
+    assert rationale == (
+        f"jaahylla 2026-10-05 asti; EMA{EMA_FAST_PERIOD} yha "
+        f"EMA{EMA_SLOW_PERIOD}:n alapuolella"
+    )
+
+
+def test_jaahy_pysyy_kun_ylos_ja_taas_alas_myynnin_jalkeen():
+    # Risteys myynnin jalkeen, mutta se oli alasristeys: nopea on nyt alla.
+    score = _score(ema_fast=95.0, ema_slow=100.0, ema_cross_date="2026-09-12")
+    state = _state(cooldowns={"AAPL": _cooldown()})
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "hylatty"
+    assert "alapuolella" in rationale
+    assert "ohitettu" not in rationale
+
+
+@pytest.mark.parametrize(
+    ("ema_fast", "ema_slow"),
+    [(None, None), (110.0, None), (None, 100.0)],
+)
+def test_jaahy_pysyy_kun_ema_data_puuttuu(ema_fast, ema_slow):
+    score = _score(ema_fast=ema_fast, ema_slow=ema_slow, ema_cross_date="2026-09-10")
+    state = _state(cooldowns={"AAPL": _cooldown()})
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "hylatty"
+    assert rationale == "jaahylla 2026-10-05 asti; EMA-dataa ei ole"
+
+
+def test_jaahyn_ohitus_ei_ohita_rr_kynnysta():
+    score = _score(
+        risk_reward_score=RR_THRESHOLD - 1,
+        ema_fast=110.0,
+        ema_slow=100.0,
+        ema_cross_date="2026-09-10",
+    )
+    state = _state(cooldowns={"AAPL": _cooldown()})
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "hylatty"
+    assert "RR_THRESHOLD" in rationale
+    assert "jaahy" not in rationale
+
+
+def test_jaahyn_ohitus_ei_ohita_kapasiteettiehtoja():
+    score = _score(ema_fast=110.0, ema_slow=100.0, ema_cross_date="2026-09-10")
+    state = _state(cooldowns={"AAPL": _cooldown()}, buys_this_run=MAX_BUYS_PER_RUN)
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "hylatty"
+    assert "MAX_BUYS_PER_RUN" in rationale
+
+
+def test_stop_myynti_ehjassa_trendissa_jaahy_pysyy():
+    # Myyty stopilla kun nopea EMA oli yha hitaan ylapuolella: viimeisin
+    # (ylos)risteys on kaukana ennen myyntia -> sama veto, jaahy pysyy.
+    score = _score(ema_fast=110.0, ema_slow=100.0, ema_cross_date="2026-03-02")
+    state = _state(cooldowns={"AAPL": _cooldown()})
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "hylatty"
+    assert "viimeisin risteys 2026-03-02 ennen myyntia (2026-09-05)" in rationale
+
+
+def test_jaahy_pysyy_kun_risteysta_ei_havaittu():
+    # Nopea EMA ollut ylapuolella koko historian: ei nayttoa trendin paluusta.
+    score = _score(ema_fast=110.0, ema_slow=100.0, ema_cross_date=None)
+    state = _state(cooldowns={"AAPL": _cooldown()})
+
+    decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
+
+    assert decision == "hylatty"
+    assert rationale.startswith("jaahylla 2026-10-05 asti; ")
+    assert "ohitettu" not in rationale
 
 
 def test_ostoraja_taynna_hylkaa():
@@ -218,7 +362,7 @@ def test_jaahy_tarkistetaan_ennen_laatuehtoja():
     # Kerrosjarjestys: jaahy on kelpoisuuskerroksessa, RR-kynnys laatukerroksessa.
     # Ehdokas joka on seka jaahylla etta alittaa RR-kynnyksen saa jaahy-perustelun.
     score = _score(risk_reward_score=RR_THRESHOLD - 1)
-    state = _state(cooldown_until={"AAPL": "2026-10-05"})
+    state = _state(cooldowns={"AAPL": _cooldown()})
 
     decision, rationale = paatoksentekija.decide_buy(score, _candidate(), state)
 

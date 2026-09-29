@@ -944,6 +944,191 @@ def test_aja_tarkistus_ei_kutsu_hakufunktioita(tmp_path, monkeypatch):
     assert rivit[0]["advanced"] == 1
 
 
+# --- myytyjen seuranta normaaliajossa (vaihe 3e) ---
+
+
+def _lisaa_positio(polku, symboli, status="suljettu", myyty_paivia_sitten=None):
+    myyty = (
+        (date.today() - timedelta(days=myyty_paivia_sitten)).isoformat()
+        if myyty_paivia_sitten is not None
+        else None
+    )
+    yhteys = tietokanta.open_connection(polku)
+    try:
+        yhteys.execute(
+            """
+            INSERT INTO positions (
+                symbol, status, buy_price, quantity, stake_usd, buy_date,
+                buy_run_id, sell_date
+            ) VALUES (?, ?, 100, 10, 1000, '2026-01-01', 'ajo0', ?)
+            """,
+            (symboli, status, myyty),
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+
+def _korvaa_haut(monkeypatch, analyytikko=None, us_symbolit=None):
+    monkeypatch.setattr(
+        trendinmetsastaja,
+        "fetch_analyst_changes",
+        lambda run_id=None: analyytikko or [],
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_congress_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_insider_trades", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_price_targets", lambda run_id=None: []
+    )
+    monkeypatch.setattr(
+        trendinmetsastaja, "fetch_us_symbols", lambda: set(us_symbolit or [])
+    )
+
+
+def _seurantarivit(polku, run_id):
+    return [
+        rivi
+        for rivi in tietokanta.get_candidates(
+            run_id, advanced_only=False, db_path=polku
+        )
+        if rivi["source"] == "seuranta"
+    ]
+
+
+def test_seuranta_myyty_10_pv_sitten_on_ehdokkaissa(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    _lisaa_positio(polku, "WMB", myyty_paivia_sitten=10)
+    _korvaa_haut(monkeypatch)
+
+    yhteenveto = trendinmetsastaja.run("ajoS", "normaali", db_path=polku)
+
+    rivit = _seurantarivit(polku, "ajoS")
+    assert len(rivit) == 1
+    rivi = rivit[0]
+    assert rivi["symbol"] == "WMB"
+    assert rivi["advanced"] == 1
+    assert rivi["score"] is None
+    assert rivi["rank"] is None
+    myyty = date.today() - timedelta(days=10)
+    asti = myyty + timedelta(days=30)
+    assert rivi["reason"] == (
+        f"myyty {myyty.isoformat()}, seurataan jaahyn ajan ({asti.isoformat()} asti)"
+    )
+    assert "1 seurannassa (WMB)" in yhteenveto
+
+
+def test_seuranta_myyty_31_pv_sitten_ei_ehdokkaissa(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    _lisaa_positio(polku, "WMB", myyty_paivia_sitten=31)
+    _korvaa_haut(monkeypatch)
+
+    trendinmetsastaja.run("ajoS", "normaali", db_path=polku)
+
+    assert _seurantarivit(polku, "ajoS") == []
+
+
+def test_seuranta_ei_lisaa_omistettua_takaisinostettua_symbolia(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    # myyty 10 pv sitten (jaahylla paivamaaran puolesta) ja ostettu takaisin
+    _lisaa_positio(polku, "WMB", myyty_paivia_sitten=10)
+    _lisaa_positio(polku, "WMB", status="aktiivinen")
+    _korvaa_haut(monkeypatch)
+
+    trendinmetsastaja.run("ajoS", "normaali", db_path=polku)
+
+    assert _seurantarivit(polku, "ajoS") == []
+
+
+def test_seuranta_ei_kaksoisrivia_jatkoon_paasseelle_fmp_ehdokkaalle(
+    tmp_path, monkeypatch
+):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    _lisaa_positio(polku, "NVDA", myyty_paivia_sitten=10)
+    _korvaa_haut(
+        monkeypatch, analyytikko=[_analyytikkorivi("NVDA")], us_symbolit={"NVDA"}
+    )
+
+    trendinmetsastaja.run("ajoS", "normaali", db_path=polku)
+
+    rivit = tietokanta.get_candidates("ajoS", advanced_only=False, db_path=polku)
+    assert [(r["symbol"], r["source"], r["advanced"]) for r in rivit] == [
+        ("NVDA", "analyytikko", 1)
+    ]
+
+
+def test_seuranta_lisataan_jatkoon_paasemattomalle_fmp_ehdokkaalle(
+    tmp_path, monkeypatch
+):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    _lisaa_positio(polku, "NVDA", myyty_paivia_sitten=10)
+    matala = _analyytikkorivi("NVDA", uusi="Hold", edellinen="Hold", action="hold")
+    _korvaa_haut(monkeypatch, analyytikko=[matala], us_symbolit={"NVDA"})
+
+    trendinmetsastaja.run("ajoS", "normaali", db_path=polku)
+
+    rivit = tietokanta.get_candidates("ajoS", advanced_only=False, db_path=polku)
+    assert [(r["symbol"], r["source"], r["advanced"]) for r in rivit] == [
+        ("NVDA", "analyytikko", 0),
+        ("NVDA", "seuranta", 1),
+    ]
+    # Agentti 2 lukee vain jatkoon-rivit: symboli pisteytetaan tasan kerran.
+    jatkoon = tietokanta.get_candidates("ajoS", advanced_only=True, db_path=polku)
+    assert [r["symbol"] for r in jatkoon] == ["NVDA"]
+
+
+def test_seuranta_ei_laske_max_selectediin(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    _lisaa_positio(polku, "NVDA", myyty_paivia_sitten=10)
+    analyytikko = [
+        _analyytikkorivi(s, paivia_sitten=i) for i, s in enumerate(SYMBOLIT_12)
+    ]
+    _korvaa_haut(monkeypatch, analyytikko=analyytikko, us_symbolit=SYMBOLIT_12)
+
+    trendinmetsastaja.run("ajoS", "normaali", db_path=polku)
+
+    jatkoon = tietokanta.get_candidates("ajoS", advanced_only=True, db_path=polku)
+    fmp_jatkoon = [r for r in jatkoon if r["source"] != "seuranta"]
+    assert len(fmp_jatkoon) == MAX_SELECTED
+    assert len(jatkoon) == MAX_SELECTED + 1
+    assert "NVDA" in {r["symbol"] for r in jatkoon}
+
+
+def test_regressio_tarkistusajossa_ei_seurantariveja(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    _lisaa_positio(polku, "WMB", myyty_paivia_sitten=10)
+    _lisaa_positio(polku, "AAPL", status="aktiivinen")
+
+    trendinmetsastaja.run("ajoT", "tarkistus", db_path=polku)
+
+    rivit = tietokanta.get_candidates("ajoT", advanced_only=False, db_path=polku)
+    assert [(r["symbol"], r["source"]) for r in rivit] == [("AAPL", "positio")]
+
+
+def test_select_followed_symbols_jarjestys_ja_suodatus():
+    jaahyt = {
+        "ZZZ": {"until": "2026-10-20", "sold_on": "2026-09-20"},
+        "AAA": {"until": "2026-10-10", "sold_on": "2026-09-10"},
+        "OWN": {"until": "2026-10-10", "sold_on": "2026-09-10"},
+        "FMP": {"until": "2026-10-10", "sold_on": "2026-09-10"},
+    }
+    ehdokkaat = [{"symbol": "FMP", "advanced": 1}, {"symbol": "ZZZ", "advanced": 0}]
+
+    valitut = trendinmetsastaja.select_followed_symbols(jaahyt, ehdokkaat, ["OWN"])
+
+    assert [symboli for symboli, _ in valitut] == ["AAA", "ZZZ"]
+
+
 # --- fetch_us_symbols(): 30 vrk:n valimuisti ja epaonnistumisen varajarjestelma ---
 
 

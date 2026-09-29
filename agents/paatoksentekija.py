@@ -19,6 +19,66 @@ from core.asetukset import (
 _loki = loki.get_logger(__name__)
 
 
+def _check_cooldown_bypass(score: dict, cooldown: dict) -> tuple[bool, str]:
+    """Päättää ohittaako nousutrendin paluu jäähyn (vaihe 3e).
+
+    Palauttaa (ohitetaanko, perustelu). Jäähy ohitetaan kun nopea EMA on nyt
+    hitaan yläpuolella ja viimeisin risteys on tapahtunut myyntipäivänä tai
+    sen jälkeen. Jäähyn peruste on "samaa vetoa ei aseteta heti uudelleen" -
+    mutta kun trendi on myynnin jälkeen alkanut uudelleen, kyse ei ole enää
+    samasta vedosta, ja siitä on näyttö.
+
+    Raja sisältyy: ajot tehdään ennen New Yorkin pörssin avautumista, joten
+    myyntipäivän päivämäärällä kirjattu risteys syntyi myyntiä seuraavassa
+    kaupankäyntisessiossa ja on uutta tietoa. Aiempi risteys oli tiedossa jo
+    myyntihetkellä eikä voi kumota myyntiä. Puuttuva EMA-data ei ohita jäähyä,
+    koska ilman dataa ei ole näyttöä trendin paluusta.
+
+    Sääntö koskee kaikkia myyntejä, mutta käytännössä se vaikuttaa vain
+    EMA-myynteihin. EMA-myynti tapahtuu kun nopea EMA on juuri laskenut alle,
+    joten uusi ylösristeys on mahdollinen heti kun trendi palaa. Stop-myynti
+    tapahtuu usein kun nopea EMA on yhä hitaan yläpuolella: uusi ylösristeys
+    vaatii että nopea EMA laskee ensin alle ja nousee sitten takaisin. Jos
+    näin käy, trendi on oikeasti ensin päättynyt ja alkanut uudelleen, ja
+    ohitus on perusteltu. Jos ei, viimeisin risteys on ennen myyntiä ja jäähy
+    pysyy - juuri se "sama veto samaan tappioon" -tilanne jota varten jäähy
+    on olemassa.
+    """
+    until = cooldown["until"]
+    sold_on = cooldown["sold_on"]
+    ema_fast = score.get("ema_fast")
+    ema_slow = score.get("ema_slow")
+    ema_cross_date = score.get("ema_cross_date")
+
+    if ema_fast is None or ema_slow is None:
+        return False, f"jaahylla {until} asti; EMA-dataa ei ole"
+    if ema_fast < ema_slow:
+        return (
+            False,
+            f"jaahylla {until} asti; EMA{EMA_FAST_PERIOD} yha "
+            f"EMA{EMA_SLOW_PERIOD}:n alapuolella",
+        )
+    if ema_cross_date is None:
+        # Nopea EMA on ollut hitaan ylapuolella koko havaitun historian ajan,
+        # joten trendi ei ole paattynyt ja alkanut uudelleen myynnin jalkeen.
+        return (
+            False,
+            f"jaahylla {until} asti; EMA-risteysta ei havaittu historiassa, "
+            f"ei nayttoa trendin paluusta myynnin ({sold_on}) jalkeen",
+        )
+    if ema_cross_date < sold_on:
+        return (
+            False,
+            f"jaahylla {until} asti; viimeisin risteys {ema_cross_date} "
+            f"ennen myyntia ({sold_on})",
+        )
+    return (
+        True,
+        f"jaahy ohitettu: EMA{EMA_FAST_PERIOD} nousi EMA{EMA_SLOW_PERIOD}:n "
+        f"yli {ema_cross_date}, myynnin ({sold_on}) jalkeen",
+    )
+
+
 def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, str]:
     """Soveltaa 8 ostoehtoa järjestyksessä ja palauttaa (päätös, perustelu).
 
@@ -26,7 +86,9 @@ def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, s
     Ehdot jakautuvat kolmeen kerrokseen: kelpoisuus (saako tätä symbolia edes
     harkita), laatu (onko tämä hyvä ehdokas) ja kapasiteetti (mahtuuko tämä
     salkkuun juuri nyt). Jäähy on kelpoisuuskerroksessa duplikaatin rinnalla:
-    symbolia ei saa harkita olipa se kuinka hyvä tahansa. MAX_BUYS_PER_RUN on
+    symbolia ei saa harkita olipa se kuinka hyvä tahansa - ellei nousutrendi
+    ole alkanut uudelleen myynnin jälkeen (vaihe 3e), jolloin vain jäähyehto
+    poistuu ja muut ehdot pätevät normaalisti. MAX_BUYS_PER_RUN on
     sen sijaan kapasiteettikerroksen viimeinen ehto - kun se laukeaa, tiedät
     että ehdokas olisi muuten ostettu, ja juuri se tieto kertoo onko raja
     oikealla tasolla.
@@ -51,14 +113,17 @@ def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, s
 
     # 3. jaahy - stopattu tai muuten suljettu symboli ei saa palata heti,
     # koska sama vedon asettaminen uudelleen maksaisi saman tappion
-    # toistamiseen (ks. REPURCHASE_COOLDOWN_DAYS).
-    cooldown_until = state["cooldown_until"].get(symbol)
-    if cooldown_until is not None:
-        return (
-            "hylatty",
-            f"{symbol} on jaahylla {cooldown_until} asti "
-            f"(REPURCHASE_COOLDOWN_DAYS {REPURCHASE_COOLDOWN_DAYS})",
-        )
+    # toistamiseen (ks. REPURCHASE_COOLDOWN_DAYS). Poikkeus: jos nousutrendi
+    # on alkanut uudelleen myynnin jalkeen, kyse ei ole enaa samasta vedosta
+    # (vaihe 3e, ks. _check_cooldown_bypass). Ohitus poistaa vain taman
+    # ehdon - kaikki muut ehdot tarkistetaan normaalisti, koska trendin
+    # paluu ei ole ostosyy vaan vain yhden esteen poistuminen.
+    cooldown_text = None
+    cooldown = state["cooldowns"].get(symbol)
+    if cooldown is not None:
+        bypassed, cooldown_text = _check_cooldown_bypass(score, cooldown)
+        if not bypassed:
+            return "hylatty", cooldown_text
 
     # --- Laatu: onko tämä hyvä ehdokas? ---
 
@@ -122,6 +187,9 @@ def decide_buy(score: dict, candidate: dict | None, state: dict) -> tuple[str, s
         f"tilaa {state['active_count']}/{MAX_POSITIONS} positiota, "
         f"kateista {state['cash']:.2f} USD"
     )
+    # Takaisinostot pitaa pystya erottamaan tavallisista ostoista jalkikateen.
+    if cooldown_text is not None:
+        rationale += f"; {cooldown_text}"
     return "osta", rationale
 
 
@@ -353,7 +421,7 @@ def _run_normal(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) 
 
     sorted_scores = sorted(scores, key=_sort_key)
 
-    cooldown_until = tietokanta.get_cooldown_symbols(
+    cooldowns = tietokanta.get_cooldown_symbols(
         REPURCHASE_COOLDOWN_DAYS, date.today(), db_path=db_path
     )
 
@@ -362,7 +430,7 @@ def _run_normal(run_id: str, run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) 
         "cash": cash,
         "active_symbols": {p["symbol"] for p in open_positions},
         "buys_this_run": 0,
-        "cooldown_until": cooldown_until,
+        "cooldowns": cooldowns,
     }
 
     purchases = 0

@@ -406,10 +406,13 @@ def test_jaahy_voimassa_kun_myyty_hiljattain(db_polku):
 
     jaahyt = tietokanta.get_cooldown_symbols(30, tanaan, db_path=db_polku)
 
-    assert "AAPL" in jaahyt
-    assert (
-        jaahyt["AAPL"] == (tanaan - timedelta(days=10) + timedelta(days=30)).isoformat()
-    )
+    # Vaihe 3e: seka paattymis- etta myyntipaiva palautetaan suoraan.
+    assert jaahyt == {
+        "AAPL": {
+            "until": (tanaan - timedelta(days=10) + timedelta(days=30)).isoformat(),
+            "sold_on": (tanaan - timedelta(days=10)).isoformat(),
+        }
+    }
 
 
 def test_jaahy_ei_voimassa_kun_myyty_kauan_sitten(db_polku):
@@ -473,10 +476,37 @@ def test_jaahy_kaytetaan_viimeisinta_myyntipaivaa(db_polku):
 
     # vanhempi myynti (50 vrk sitten) olisi jo jaahyn ulkopuolella, mutta
     # tuoreempi (5 vrk sitten) on yha voimassa - viimeisin ratkaisee.
-    assert "AAPL" in jaahyt
-    assert (
-        jaahyt["AAPL"] == (tanaan - timedelta(days=5) + timedelta(days=30)).isoformat()
-    )
+    assert jaahyt == {
+        "AAPL": {
+            "until": (tanaan - timedelta(days=5) + timedelta(days=30)).isoformat(),
+            "sold_on": (tanaan - timedelta(days=5)).isoformat(),
+        }
+    }
+
+
+def test_jaahy_myyntipaiva_aikaleimasta_paivamaaraksi(db_polku):
+    # close_position() kirjoittaa sell_date:n aikaleimana; sold_on on
+    # pelkka paivamaara, jotta se on vertailukelpoinen ema_cross_date:n kanssa.
+    tietokanta.init_database(db_polku)
+    tanaan = date(2026, 9, 17)
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            """
+            INSERT INTO positions (
+                symbol, status, buy_price, quantity, stake_usd, buy_date,
+                buy_run_id, sell_date
+            ) VALUES ('NVDA', 'suljettu', 100, 10, 1000, '2026-09-01', 'ajo1',
+                      '2026-09-15T08:21:37')
+            """
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    jaahyt = tietokanta.get_cooldown_symbols(30, tanaan, db_path=db_polku)
+
+    assert jaahyt == {"NVDA": {"until": "2026-10-15", "sold_on": "2026-09-15"}}
 
 
 def test_jaahy_ohittaa_avoimen_position(db_polku):

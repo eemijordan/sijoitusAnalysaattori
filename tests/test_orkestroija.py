@@ -90,6 +90,98 @@ def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
     assert "RR_THRESHOLD" in json.loads(ajon_rivi["settings_json"])
 
 
+# --- koko ketju: myydyn symbolin seuranta ja jaahyn ohitus (vaihe 3e) ---
+
+
+def _valmistele_seurantaketju(tmp_path, monkeypatch, ema_fast, ema_cross_date):
+    """Symboli WMB myyty 10 pv sitten; FMP ei palauta mitaan."""
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    myyty = (date.today() - timedelta(days=10)).isoformat()
+    yhteys = tietokanta.open_connection(polku)
+    try:
+        yhteys.execute(
+            """
+            INSERT INTO positions (
+                symbol, status, buy_price, quantity, stake_usd, buy_date,
+                buy_run_id, sell_date
+            ) VALUES ('WMB', 'suljettu', 150, 6, 900, '2026-01-01', 'ajo0', ?)
+            """,
+            (myyty,),
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    monkeypatch.setattr(orkestroija, "_data_ready_now", lambda: (True, ""))
+    for nimi in (
+        "fetch_analyst_changes",
+        "fetch_congress_trades",
+        "fetch_insider_trades",
+        "fetch_price_targets",
+    ):
+        monkeypatch.setattr(trendinmetsastaja, nimi, lambda run_id=None: [])
+    monkeypatch.setattr(trendinmetsastaja, "fetch_us_symbols", lambda: set())
+
+    # ATR 1,3 % (3) + trendi (4) + asema 62,5 % (2) + RSI 55 (1) = 10 pistetta
+    price_data = {
+        "current_price": 150.0,
+        "sma50": 140.0,
+        "sma200": 130.0,
+        "high_52w": 180.0,
+        "low_52w": 100.0,
+        "history_days": 252,
+        "ema_fast": ema_fast,
+        "ema_slow": 140.0,
+        "ema_cross_date": ema_cross_date,
+    }
+    monkeypatch.setattr(
+        tekninen_analyytikko, "fetch_price_data", lambda symbol: price_data
+    )
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_atr", lambda symbol: 2.0)
+    monkeypatch.setattr(tekninen_analyytikko, "fetch_rsi", lambda symbol: 55.0)
+    return polku, myyty
+
+
+def test_ketju_seurattava_ema_palannut_ostetaan_takaisin(tmp_path, monkeypatch):
+    risteys = (date.today() - timedelta(days=3)).isoformat()
+    polku, myyty = _valmistele_seurantaketju(
+        tmp_path, monkeypatch, ema_fast=145.0, ema_cross_date=risteys
+    )
+
+    ajo_id = orkestroija.run_normal(polku)
+
+    ehdokkaat = tietokanta.get_candidates(ajo_id, advanced_only=True, db_path=polku)
+    assert [(r["symbol"], r["source"]) for r in ehdokkaat] == [("WMB", "seuranta")]
+    pisteytykset = tietokanta.get_scores(ajo_id, db_path=polku)
+    assert pisteytykset[0]["risk_reward_score"] >= 7
+    paatokset = tietokanta.get_decisions(ajo_id, db_path=polku)
+    assert len(paatokset) == 1
+    assert paatokset[0]["decision"] == "osta"
+    assert (
+        f"jaahy ohitettu: EMA20 nousi EMA100:n yli {risteys}"
+        in (paatokset[0]["rationale"])
+    )
+    assert f"myynnin ({myyty}) jalkeen" in paatokset[0]["rationale"]
+    assert tietokanta.has_open_position("WMB", db_path=polku)
+
+
+def test_ketju_seurattava_ema_yha_alla_hylataan_jaahylla(tmp_path, monkeypatch):
+    risteys = (date.today() - timedelta(days=12)).isoformat()
+    polku, _ = _valmistele_seurantaketju(
+        tmp_path, monkeypatch, ema_fast=135.0, ema_cross_date=risteys
+    )
+
+    ajo_id = orkestroija.run_normal(polku)
+
+    paatokset = tietokanta.get_decisions(ajo_id, db_path=polku)
+    assert len(paatokset) == 1
+    assert paatokset[0]["decision"] == "hylatty"
+    assert paatokset[0]["rationale"].startswith("jaahylla ")
+    assert "EMA20 yha EMA100:n alapuolella" in paatokset[0]["rationale"]
+    assert not tietokanta.has_open_position("WMB", db_path=polku)
+
+
 def test_kaatuva_agentti_jattaa_ajon_keskeytyi_tilaan_ja_virhetekstin(
     tmp_path, monkeypatch
 ):

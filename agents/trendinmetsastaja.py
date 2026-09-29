@@ -14,6 +14,7 @@ from core.asetukset import (
     CO_OCCURRENCE_THRESHOLD,
     MAX_SELECTED,
     MIN_SHARE_PRICE,
+    REPURCHASE_COOLDOWN_DAYS,
     get_fmp_key,
     get_twelve_data_key,
 )
@@ -830,6 +831,37 @@ def build_candidates(
     return candidates
 
 
+def select_followed_symbols(
+    cooldowns: dict[str, dict[str, str]],
+    candidates: list[dict],
+    skip_symbols: list[str],
+) -> list[tuple[str, dict[str, str]]]:
+    """Valitsee jäähyllä olevista symboleista seurantaan otettavat (vaihe 3e).
+
+    Palauttaa [(symboli, {"until", "sold_on"}), ...] symbolijärjestyksessä,
+    jotta tulos on toistettava. Pois jätetään omistetut symbolit
+    (skip_symbols - takaisinostettu symboli voi olla sekä omistettu että
+    päivämäärällisesti jäähyllä) ja tämän ajon jatkoon päässeet
+    FMP-ehdokkaat, jotta Agentti 2 ei saa samaa symbolia kahdesti. Jatkoon
+    pääsemätön FMP-ehdokas saa silti seurantarivin: seurannan tarkoitus on
+    tarkistaa trendi riippumatta FMP:stä.
+
+    Seuranta-aika on tarkoituksella sama kuin jäähyn aika, ei oma vakionsa.
+    Jos seuranta jatkuisi jäähyn jälkeen, seurattava tarjottaisiin
+    ehdokkaaksi ilman jäähyä ja se voitaisiin ostaa pelkkien pisteiden
+    perusteella, vaikka nopea EMA olisi yhä hitaan alla. Kun seuranta =
+    jäähy, seurattava voidaan ostaa vain jos Agentti 3:n jäähyn ohitus
+    toteaa trendin palanneen.
+    """
+    skip = set(skip_symbols or [])
+    advanced = {c["symbol"] for c in candidates if c.get("advanced") == 1}
+    return [
+        (symbol, cooldown)
+        for symbol, cooldown in sorted(cooldowns.items())
+        if symbol not in skip and symbol not in advanced
+    ]
+
+
 def _run_check(run_id: str, run_type: str, db_path) -> str:
     """Merkitsee kaikki aktiiviset positiot jatkoon kahden viikon tarkistusta varten."""
     open_positions = tietokanta.get_open_positions(db_path)
@@ -925,8 +957,40 @@ def _run_normal(run_id: str, run_type: str, db_path) -> str:
             db_path=db_path,
         )
 
+    # Myytyjen seuranta (vaihe 3e): jaahylla olevat symbolit menevat jatkoon
+    # FMP-ehdokkaiden rinnalla, jotta Agentti 2 laskee niiden EMA-tilan ja
+    # Agentti 3 voi todeta onko trendi palannut. Ilman tata jaahyn ohitus
+    # ei kaytannossa koskaan laukeaisi: myydysta osakkeesta ei yleensa tule
+    # uutta FMP-uutista. Seurattavat eivat laske MAX_SELECTED:iin - suurin
+    # osa hylataan jaahyn takia, joten ne veisivat paikkoja uusilta
+    # loydoilta turhaan. score ja rank jaavat Noneksi kuten tarkistusajon
+    # "positio"-riveilla: seurattavaa ei valita pisteilla vaan jaahyn
+    # perusteella.
+    cooldowns = tietokanta.get_cooldown_symbols(
+        REPURCHASE_COOLDOWN_DAYS, date.today(), db_path=db_path
+    )
+    followed = select_followed_symbols(cooldowns, candidates, skip_symbols)
+    for symbol, cooldown in followed:
+        tietokanta.insert_candidate(
+            run_id=run_id,
+            run_type=run_type,
+            symbol=symbol,
+            source="seuranta",
+            reason=(
+                f"myyty {cooldown['sold_on']}, seurataan jaahyn ajan "
+                f"({cooldown['until']} asti)"
+            ),
+            advanced=1,
+            db_path=db_path,
+        )
+
     advanced_count = sum(1 for e in candidates if e["advanced"] == 1)
     summary = f"{len(candidates)} ehdokasta, {advanced_count} jatkoon"
+    if followed:
+        summary += (
+            f", {len(followed)} seurannassa "
+            f"({', '.join(symbol for symbol, _ in followed)})"
+        )
     _loki.info(f"Ajo {run_id} ({run_type}): {summary}")
     return summary
 

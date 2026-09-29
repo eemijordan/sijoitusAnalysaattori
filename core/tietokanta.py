@@ -321,14 +321,18 @@ def has_open_position(symbol: str, db_path=DEFAULT_DB_PATH) -> bool:
 
 def get_cooldown_symbols(
     cooldown_days: int, today: date, db_path=DEFAULT_DB_PATH
-) -> dict[str, str]:
+) -> dict[str, dict[str, str]]:
     """Palauttaa symbolit joiden uudelleenoston jaahy on yha voimassa.
 
-    Avaimena symboli, arvona jaahyn paattymispaiva ISO-muodossa. Perustuu
-    suljettujen positioiden symbolikohtaiseen viimeisimpaan sell_date:en -
-    jos sama symboli on suljettu useaan kertaan, vain viimeisin myyntipaiva
-    ratkaisee. today annetaan parametrina eika lueta kellosta, jotta funktio
-    on testattavissa ilman ajan jaadyttamista.
+    Avaimena symboli, arvona ``{"until": jaahyn paattymispaiva, "sold_on":
+    myyntipaiva}`` ISO-muodossa (vaihe 3e). Myyntipaiva palautetaan suoraan
+    eika sita johdeta paattymispaivasta vahentamalla cooldown_days: se
+    sitoisi kaksi asiaa toisiinsa ilman syyta ja rikkoutuisi hiljaa jos
+    jaahyn laskentaa joskus muutetaan. Perustuu suljettujen positioiden
+    symbolikohtaiseen viimeisimpaan sell_date:en - jos sama symboli on
+    suljettu useaan kertaan, vain viimeisin myyntipaiva ratkaisee. today
+    annetaan parametrina eika lueta kellosta, jotta funktio on
+    testattavissa ilman ajan jaadyttamista.
     """
     connection = open_connection(db_path)
     try:
@@ -343,12 +347,15 @@ def get_cooldown_symbols(
     finally:
         connection.close()
 
-    cooldowns: dict[str, str] = {}
+    cooldowns: dict[str, dict[str, str]] = {}
     for row in rows:
         sell_date = date.fromisoformat(row["viimeisin_myynti"][:10])
         cooldown_until = sell_date + timedelta(days=cooldown_days)
         if cooldown_until > today:
-            cooldowns[row["symbol"]] = cooldown_until.isoformat()
+            cooldowns[row["symbol"]] = {
+                "until": cooldown_until.isoformat(),
+                "sold_on": sell_date.isoformat(),
+            }
     return cooldowns
 
 
