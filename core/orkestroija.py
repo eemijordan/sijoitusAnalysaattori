@@ -4,10 +4,12 @@ import json
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from agents import paatoksentekija, raportoija, tekninen_analyytikko, trendinmetsastaja
 from core import asetukset, loki, porssiaika, tietokanta
+from core.ajolukko import LOCK_FILENAME, RunLockedError, run_lock
 
 _loki = loki.get_logger(__name__)
 
@@ -60,6 +62,18 @@ def _get_git_commit() -> str | None:
 
 
 def _run_agents(run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
+    """Ottaa ajolukon ja ajaa agentit; nostaa RunLockedError jos varattu.
+
+    Lukko otetaan ennen init_database():a ja mark_stale_runs_interrupted():a
+    (vaihe 6a): kun lukko on saatu, jokainen 'kesken'-ajo on oikeasti
+    kuollut, joten siivous ei voi koskaan merkitä käynnissä olevaa ajoa
+    keskeytyneeksi.
+    """
+    with run_lock(Path(db_path).parent / LOCK_FILENAME):
+        return _run_agents_locked(run_type, db_path=db_path)
+
+
+def _run_agents_locked(run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     """Alustaa tietokannan ja ajaa kaikki neljä agenttia järjestyksessä.
 
     Yhteinen run_normal():n ja run_review():n välillä, jottei runs-taulun
@@ -143,17 +157,31 @@ def run_review(db_path=tietokanta.DEFAULT_DB_PATH) -> str:
     return _run_agents("tarkistus", db_path=db_path)
 
 
-if __name__ == "__main__":
-    _run_type = sys.argv[1] if len(sys.argv) > 1 else "normaali"
-    _ajo_funktio = run_review if _run_type == "tarkistus" else run_normal
+def main(argv: list[str]) -> int:
+    """Ajaa argumentin mukaisen ajon ja palauttaa paluukoodin.
+
+    0 valmis, 1 kaatui, 2 data ei valmis, 3 toinen ajo käynnissä. 2 ja 3
+    ovat kieltäytymisiä, eivät kaatumisia, ja niiden pitää näyttää
+    erilaisilta jokaiselle joka runs-taulua tai paluukoodia myöhemmin
+    katsoo (ks. dashboard/nakyma.py).
+    """
+    run_type = argv[0] if argv else "normaali"
+    run = run_review if run_type == "tarkistus" else run_normal
+    # Aliluokat (DataNotReadyError, RunLockedError) ennen yleista
+    # RuntimeError-haaraa.
     try:
-        _ajo_funktio()
+        run()
     except DataNotReadyError as error:
-        # Oma paluukoodi (2) - kieltaytyminen ei ole kaatuminen (1), ja
-        # niiden pitaa nayttaa erilaisilta jokaiselle joka runs-taulua tai
-        # tata paluukoodia myohemmin katsoo (ks. dashboard/nakyma.py).
         print(f"DATA EI VALMIS: {error}")
-        sys.exit(2)
+        return 2
+    except RunLockedError as error:
+        print(f"TOINEN AJO KAYNNISSA: {error}")
+        return 3
     except RuntimeError as error:
         print(f"VIRHE: {error}")
-        sys.exit(1)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

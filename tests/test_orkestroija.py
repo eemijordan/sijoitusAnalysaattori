@@ -5,6 +5,7 @@ import pytest
 
 from agents import tekninen_analyytikko, trendinmetsastaja
 from core import orkestroija, tietokanta
+from core.ajolukko import RunLockedError, run_lock
 
 
 def test_aja_normaali_paasta_paahan(tmp_path, monkeypatch):
@@ -313,6 +314,91 @@ def test_data_ei_valmis_yhtaan_agenttia_ei_kutsuta(tmp_path, monkeypatch):
         orkestroija.run_normal(polku)
 
     assert kutsut == []
+
+
+# --- ajolukko (vaihe 6a) ---
+
+
+def test_lukko_varattu_ei_siivoa_kaynnissa_olevaa_ajoa(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    monkeypatch.setattr(orkestroija, "_data_ready_now", lambda: (True, ""))
+    tietokanta.init_database(polku)
+    tietokanta.start_run(
+        run_id="kaynnissa",
+        run_type="tarkistus",
+        settings_json="{}",
+        model_version="1.2",
+        db_path=polku,
+    )
+
+    # Testi pitaa lukkoa kuin toinen kaynnissa oleva ajo.
+    with run_lock(tmp_path / "ajo.lock"):
+        with pytest.raises(RunLockedError):
+            orkestroija.run_review(polku)
+
+    # Siivous ei ehtinyt ajaa: kaynnissa oleva ajo on yha 'kesken', eika
+    # uusia runs-riveja syntynyt.
+    assert tietokanta.get_run("kaynnissa", db_path=polku)["status"] == "kesken"
+    assert _rivimaara(polku, "runs") == 1
+
+
+def test_kaatuneen_ajon_jalkeen_lukko_on_vapaa(tmp_path, monkeypatch):
+    polku = tmp_path / "testi.db"
+    monkeypatch.setattr(orkestroija, "_data_ready_now", lambda: (True, ""))
+    # run_id on sekunnin tarkkuinen aikaleima - kaksi ajoa samassa sekunnissa
+    # tormaisivat, joten annetaan omat tunnisteet.
+    tunnisteet = iter(["ajo_kaatui", "ajo_seuraava"])
+    monkeypatch.setattr(tietokanta, "new_run_id", lambda: next(tunnisteet))
+
+    class _KaatuvaAgentti:
+        @staticmethod
+        def run(run_id, run_type, db_path):
+            raise RuntimeError("simuloitu agenttivirhe")
+
+    with monkeypatch.context() as paikkaus:
+        paikkaus.setattr(orkestroija, "_AGENTIT", [("Testiagentti", _KaatuvaAgentti)])
+        with pytest.raises(RuntimeError):
+            orkestroija.run_normal(polku)
+
+    ajo_id = orkestroija.run_review(polku)
+
+    assert tietokanta.get_run(ajo_id, db_path=polku)["status"] == "valmis"
+
+
+@pytest.mark.parametrize(
+    "poikkeus, odotettu_koodi, odotettu_teksti",
+    [
+        (None, 0, ""),
+        (RuntimeError("kaatui"), 1, "VIRHE: kaatui"),
+        (orkestroija.DataNotReadyError("ei valmis"), 2, "DATA EI VALMIS: ei valmis"),
+        (RunLockedError("varattu"), 3, "TOINEN AJO KAYNNISSA: varattu"),
+    ],
+)
+def test_main_paluukoodit(
+    monkeypatch, capsys, poikkeus, odotettu_koodi, odotettu_teksti
+):
+    def _ajo():
+        if poikkeus is not None:
+            raise poikkeus
+        return "ajo"
+
+    monkeypatch.setattr(orkestroija, "run_normal", _ajo)
+
+    assert orkestroija.main([]) == odotettu_koodi
+    assert odotettu_teksti in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "argv, odotettu",
+    [(["tarkistus"], "tarkistus"), (["normaali"], "normaali"), ([], "normaali")],
+)
+def test_main_valitsee_ajotyypin(monkeypatch, argv, odotettu):
+    kutsutut = []
+    monkeypatch.setattr(orkestroija, "run_review", lambda: kutsutut.append("tarkistus"))
+    monkeypatch.setattr(orkestroija, "run_normal", lambda: kutsutut.append("normaali"))
+
+    assert orkestroija.main(argv) == 0
+    assert kutsutut == [odotettu]
 
 
 def test_data_valmis_ajo_etenee_normaalisti(tmp_path, monkeypatch):

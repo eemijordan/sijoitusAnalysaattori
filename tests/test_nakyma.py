@@ -10,6 +10,7 @@ tavalla.
 
 import ast
 import json
+from datetime import date
 from pathlib import Path
 
 import altair as alt
@@ -38,7 +39,7 @@ def _lataa_funktiot(*nimet):
         raise LookupError(f"funktioita ei loydy nakyma.py:sta: {puuttuvat}")
     moduuli = ast.Module(body=[loydetyt[nimi] for nimi in nimet], type_ignores=[])
     ast.fix_missing_locations(moduuli)
-    nimiavaruus = {"pd": pd, "alt": alt}
+    nimiavaruus = {"pd": pd, "alt": alt, "date": date}
     exec(compile(moduuli, str(NAKYMA_POLKU), "exec"), nimiavaruus)
     return tuple(nimiavaruus[nimi] for nimi in nimet)
 
@@ -49,12 +50,14 @@ def _lataa_funktiot(*nimet):
     _muotoile_tuotto,
     _tuottosarja,
     _tuottokaavio,
+    _tarkistus_vanhentunut,
 ) = _lataa_funktiot(
     "_tyhjat_viivoiksi",
     "_suomi_pvm",
     "_muotoile_tuotto",
     "_tuottosarja",
     "_tuottokaavio",
+    "_tarkistus_vanhentunut",
 )
 
 
@@ -281,3 +284,29 @@ def test_puuttuva_vertailukurssi_ei_tuota_tyhjaa_pistetta():
     ]
     assert tuottorivit  # varmistus etta tarkistus oikeasti kattaa jotain
     assert all(rivi["tuotto"] is not None for rivi in tuottorivit)
+
+
+# --- Vaihe 6a: vanhentumisvaroitus ---
+
+
+def test_tarkistus_vanhentunut_ei_yhtaan_tarkistusta():
+    varoitus = _tarkistus_vanhentunut(None, date(2026, 10, 6))
+
+    assert varoitus is not None
+    assert "Onnistunutta tarkistusajoa ei ole vielä" in varoitus
+
+
+def test_tarkistus_vanhentunut_lauantaista_tiistaihin_ei_varoitusta():
+    # 3 paivaa on normaali vali (la -> ti).
+    assert _tarkistus_vanhentunut("2026-10-03T10:00:05", date(2026, 10, 6)) is None
+
+
+def test_tarkistus_vanhentunut_lauantaista_keskiviikkoon_varoitus():
+    varoitus = _tarkistus_vanhentunut("2026-10-03T10:00:05", date(2026, 10, 7))
+
+    assert varoitus is not None
+    assert "4 päivää" in varoitus
+
+
+def test_tarkistus_vanhentunut_sama_paiva_ei_varoitusta():
+    assert _tarkistus_vanhentunut("2026-10-06T10:00:05", date(2026, 10, 6)) is None

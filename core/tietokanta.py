@@ -833,6 +833,43 @@ def get_recent_runs(limit: int = 20, db_path=DEFAULT_DB_PATH) -> list[dict]:
         connection.close()
 
 
+def get_completed_run_types(day: str, db_path=DEFAULT_DB_PATH) -> set[str]:
+    """Palauttaa ajotyypit joilla on 'valmis'-ajo annettuna päivänä.
+
+    day on muotoa YYYY-MM-DD paikallista aikaa, kuten start_run() kirjaa
+    started_at:n. Käyttää core/ajastus.py: sama ajotyyppi vain kerran
+    päivässä, myös käsin ajettu lasketaan (vaihe 6a).
+    """
+    connection = open_connection(db_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT run_type FROM runs
+            WHERE status = 'valmis' AND substr(started_at, 1, 10) = ?
+            """,
+            (day,),
+        ).fetchall()
+        return {row["run_type"] for row in rows}
+    finally:
+        connection.close()
+
+
+def get_last_completed_run(run_type: str, db_path=DEFAULT_DB_PATH) -> dict | None:
+    """Palauttaa annetun ajotyypin viimeisimmän 'valmis'-ajon, tai None."""
+    connection = open_connection(db_path)
+    try:
+        row = connection.execute(
+            """
+            SELECT * FROM runs WHERE status = 'valmis' AND run_type = ?
+            ORDER BY started_at DESC LIMIT 1
+            """,
+            (run_type,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        connection.close()
+
+
 def get_best_scores(
     days: int = 30, limit: int = 10, db_path=DEFAULT_DB_PATH
 ) -> list[dict]:

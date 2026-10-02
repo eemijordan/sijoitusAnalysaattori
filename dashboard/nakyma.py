@@ -12,7 +12,7 @@ import os
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -87,6 +87,27 @@ def _muotoile_tuotto(arvo: float | None, yksikko: str = "%") -> str:
     if pd.isna(arvo):
         return "-"
     return f"{arvo:+.2f} {yksikko}"
+
+
+def _tarkistus_vanhentunut(viimeisin_alku: str | None, tanaan: date) -> str | None:
+    """Palauttaa varoitustekstin, jos onnistuneesta tarkistuksesta on yli 3 päivää.
+
+    Automaattinen ajo voi epäonnistua kenenkään huomaamatta, jolloin stoppeja
+    ei tarkisteta (vaihe 6a). Raja on 3 päivää, koska normaali väli on
+    lauantaista tiistaihin.
+    """
+    if viimeisin_alku is None:
+        return (
+            "Onnistunutta tarkistusajoa ei ole vielä. Myyntisääntöjä (stop ja EMA) "
+            "ei ole tarkistettu."
+        )
+    paivia = (tanaan - date.fromisoformat(viimeisin_alku[:10])).days
+    if paivia <= 3:
+        return None
+    return (
+        f"Edellisestä onnistuneesta tarkistuksesta on {paivia} päivää. "
+        "Myyntisääntöjä (stop ja EMA) ei ole tarkistettu sen jälkeen."
+    )
 
 
 def _tuottosarja(tilannekuvat: list[dict]) -> pd.DataFrame:
@@ -231,8 +252,8 @@ def _aja_orkestroija(ajotyyppi: str, loki_paikka) -> int:
     stderr=STDOUT yhdistaa virhevirran koska Pythonin logging kirjoittaa
     oletuksena sinne - ilman yhdistamista live-loki olisi tyhja vaikka ajo
     toimisi. Palauttaa paluukoodin (0 onnistui, 1 kaatui, 2 data ei ollut
-    valmis); jos Popen itse epaonnistuu (esim. venv puuttuu), poikkeus
-    nousee kutsujalle asti - sita ei niellä tassa, jotta kutsuja voi
+    valmis, 3 toinen ajo kaynnissa); jos Popen itse epaonnistuu (esim. venv
+    puuttuu), poikkeus nousee kutsujalle asti - sita ei niellä tassa, jotta kutsuja voi
     nayttaa sen kayttajalle eika mikaan epaonnistu hiljaa.
 
     EI kirjoita lopputulosta loki_paikka:an - vain lokirivit. Kutsuja
@@ -257,6 +278,19 @@ def _aja_orkestroija(ajotyyppi: str, loki_paikka) -> int:
 
     return process.wait()
 
+
+# Vanhentumisvaroitus heti otsikon alla. Tietokantalukon aikana (ajo kesken)
+# varoitus jatetaan nayttamatta - ajo on silloin juuri kaynnissa.
+viimeisin_tarkistus, virhe_tarkistus = _turvallinen_haku(
+    tietokanta.get_last_completed_run, "tarkistus"
+)
+if not virhe_tarkistus:
+    _varoitus = _tarkistus_vanhentunut(
+        viimeisin_tarkistus["started_at"] if viimeisin_tarkistus else None,
+        date.today(),
+    )
+    if _varoitus is not None:
+        st.warning(_varoitus)
 
 avoimet_positiot, virhe_positiot = _turvallinen_haku(tietokanta.get_open_positions)
 omistetut_symbolit = (
@@ -575,6 +609,13 @@ if klik_tarkistus or klik_normaali:
         tila_paikka.info(
             "Markkinadata ei ollut vielä valmis - mitään ei kirjattu. "
             "Yritä uudestaan aamulla."
+        )
+    elif paluukoodi == 3:
+        # core/ajolukko.py: RunLockedError - myos kieltaytyminen, ei kaatuminen
+        # (vaihe 6a).
+        tila_paikka.info(
+            "Toinen ajo on jo käynnissä (esim. ajastettu ajo) - mitään ei "
+            "kirjattu. Odota, että se valmistuu, ja yritä sitten uudelleen."
         )
     elif paluukoodi is not None and paluukoodi != 0:
         tila_paikka.error(

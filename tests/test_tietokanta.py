@@ -1278,3 +1278,65 @@ def test_init_database_lisaa_skipped_symbols_taulun_vanhaan_kantaan_ilman_migraa
 
     assert not any(nimi.startswith("skipped_symbols.") for nimi in lisatyt)
     assert tietokanta.get_skips("ajo1", db_path=db_polku) == []
+
+
+# --- ajastuksen lukufunktiot (vaihe 6a) ---
+
+
+def _kirjaa_ajo(polku, run_id, run_type, started_at, status):
+    tietokanta.start_run(
+        run_id=run_id,
+        run_type=run_type,
+        settings_json="{}",
+        model_version="1.2",
+        db_path=polku,
+    )
+    if status != "kesken":
+        tietokanta.finish_run(run_id, status, db_path=polku)
+    yhteys = tietokanta.open_connection(polku)
+    try:
+        yhteys.execute(
+            "UPDATE runs SET started_at = ? WHERE run_id = ?", (started_at, run_id)
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+
+def test_get_completed_run_types_vain_valmis_ja_annettu_paiva(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    _kirjaa_ajo(polku, "a", "tarkistus", "2026-10-06T10:00:05", "valmis")
+    _kirjaa_ajo(polku, "b", "tarkistus", "2026-10-06T11:00:00", "valmis")
+    _kirjaa_ajo(polku, "c", "normaali", "2026-10-06T10:05:00", "keskeytyi")
+    _kirjaa_ajo(polku, "d", "normaali", "2026-10-05T10:05:00", "valmis")
+    _kirjaa_ajo(polku, "e", "normaali", "2026-10-06T10:09:00", "kesken")
+
+    assert tietokanta.get_completed_run_types("2026-10-06", db_path=polku) == {
+        "tarkistus"
+    }
+    assert tietokanta.get_completed_run_types("2026-10-05", db_path=polku) == {
+        "normaali"
+    }
+    assert tietokanta.get_completed_run_types("2026-10-07", db_path=polku) == set()
+
+
+def test_get_last_completed_run_uusin_valmis_annetulla_tyypilla(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    _kirjaa_ajo(polku, "vanha", "tarkistus", "2026-10-03T10:00:00", "valmis")
+    _kirjaa_ajo(polku, "uusi", "tarkistus", "2026-10-06T10:00:00", "valmis")
+    _kirjaa_ajo(polku, "kaatui", "tarkistus", "2026-10-07T10:00:00", "keskeytyi")
+    _kirjaa_ajo(polku, "normaali", "normaali", "2026-10-08T10:00:00", "valmis")
+
+    rivi = tietokanta.get_last_completed_run("tarkistus", db_path=polku)
+
+    assert rivi["run_id"] == "uusi"
+
+
+def test_get_last_completed_run_ei_yhtaan_none(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    _kirjaa_ajo(polku, "kaatui", "tarkistus", "2026-10-07T10:00:00", "keskeytyi")
+
+    assert tietokanta.get_last_completed_run("tarkistus", db_path=polku) is None
