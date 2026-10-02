@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from core.asetukset import INITIAL_CAPITAL
+from core.loki import mask_secrets
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -771,6 +772,8 @@ def finish_run(
     """Päivittää runs-rivin lopputilaan ('valmis' tai 'keskeytyi').
 
     Päivittää myös arkiston metatiedoston (ks. _write_run_metadata).
+    Virheteksti peitetään (mask_secrets) ennen tallennusta: se päätyy
+    _ajo.json:in kautta arkistoon, joka committataan GitHubiin (vaihe 6b).
     """
     connection = open_connection(db_path)
     try:
@@ -779,7 +782,7 @@ def finish_run(
             (
                 datetime.now().isoformat(timespec="seconds"),
                 status,
-                error,
+                mask_secrets(error),
                 run_id,
             ),
         )
@@ -903,6 +906,18 @@ def get_best_scores(
             best_by_symbol[symbol] = dict(row)
 
     return list(best_by_symbol.values())[:limit]
+
+
+def run_exists(run_id: str, db_path=DEFAULT_DB_PATH) -> bool:
+    """Kertoo, onko runs-taulussa jo rivi tällä run_id:llä."""
+    connection = open_connection(db_path)
+    try:
+        row = connection.execute(
+            "SELECT 1 FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return row is not None
+    finally:
+        connection.close()
 
 
 def get_run(run_id: str, db_path=DEFAULT_DB_PATH) -> dict | None:
@@ -1033,7 +1048,8 @@ def insert_skip(
 
     Kirjaa miksi symboli putosi kasittelysta ennen pisteytysta (ks.
     agents/tekninen_analyytikko.py). stage ja reason ovat molemmat NOT NULL -
-    ohitus jota ei osata perustella on itsessaan vika.
+    ohitus jota ei osata perustella on itsessaan vika. reason peitetään
+    (mask_secrets): verkkovirheen teksti voi sisältää API-avaimen URL:ssa.
     """
     connection = open_connection(db_path)
     try:
@@ -1046,7 +1062,7 @@ def insert_skip(
                 run_id,
                 symbol,
                 stage,
-                reason,
+                mask_secrets(reason),
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )

@@ -1,8 +1,7 @@
 # scripts/
 
-Käsin ajettavat päiväkomennot. Ajastusta ei ole otettu käyttöön (ks. CLAUDE.md,
-"Ajot käynnistetään käsin") — koneella ei haluta pyöriä taustaprosesseja
-huomaamatta.
+Käsin ajettavat päiväkomennot ja ajastetun ajon skriptit (ks. CLAUDE.md, "Ajot:
+käsin tai ajastettuna").
 
 ## aja.ps1
 
@@ -21,27 +20,63 @@ huomaamatta.
 Käynnistää `dashboard/nakyma.py`:n. Palvelin elää vain niin kauan kuin tämä
 terminaali-ikkuna on auki — kun ikkuna suljetaan (tai painetaan Ctrl+C),
 palvelin sammuu eikä koneelle jää mitään taustalle pyörimään. Tämä on
-tarkoituksellista, samasta syystä kuin ajastusta ei ole otettu käyttöön.
+tarkoituksellista: koneella ei pyöri mitään huomaamatta.
 
-## Ajastuksen käyttöönotto myöhemmin
+## Ajastus (vaihe 6b)
 
-Skripti on kirjoitettu niin, että ajastuksen lisääminen on pelkkä
-rekisteröintiaskel — itse skriptiin ei silloin tarvitse koskea. Kun se päivä
-tulee:
+```
+scripts\ajastus_asenna.cmd  -> asentaa (tai paivittaa) ajastetun ajon
+scripts\ajastus_poista.cmd  -> poistaa sen; ajot tehdaan taas vain kasin
+```
 
-- Suositeltu rytmi: tarkistus ti–la klo 09:00 Suomen aikaa, normaali ti ja pe
-  klo 09:30 Suomen aikaa.
-- Ti–la osuu maanantain–perjantain US-pörssin päätöskursseihin kukin kerran
-  (ma päätös luetaan ti, ke päätös to, jne.), ja klo 09:00 Suomen aikaa on
-  02:00 New Yorkin aikaa — vaiheen 2e `is_bar_ready()`-vartija näkee tuolloin
-  jo edellisen päivän lopullisen palkin ja päästää ajon läpi.
-- Rekisteröinti tehtäisiin `Register-ScheduledTask`:lla, action
-  `powershell.exe -File <repo>\scripts\aja.ps1 -Ajotyyppi <tyyppi>`.
-- `New-ScheduledTaskSettingsSet`:lle **on annettava** `-StartWhenAvailable`,
-  `-WakeToRun`, `-AllowStartIfOnBatteries` ja `-DontStopIfGoingOnBatteries` —
-  oletuksena Windows ei käynnistä ajastettua tehtävää akkuvirralla, ja ilman
-  näitä lippuja kannettavalla ajot jäisivät väliin hiljaa, ilman
-  virheilmoitusta.
+Asennus rekisteröi Windowsin Tehtävien ajoitukseen tehtävän
+`Sijoitusanalysaattori`, joka käynnistää `ajastettu.ps1`:n. Skripti ei päätä
+mitään itse: se ajaa `python -m core.ajastus`, joka päättää säännöt (ks.
+CLAUDE.md, "Ajolukko ja ajastetun ajon säännöt"), näyttää tulosteen ikkunassa,
+kirjoittaa sen `data\ajoloki.txt`:hen ja jättää ikkunan auki Enteriin asti.
+Ctrl+C ei katkaise ajoa vahingossa (se on kopioinnin pikanäppäin); ajon voi
+pysäyttää sulkemalla ikkunan.
 
-Tätä vaihetta ei ole toteutettu: ei `Register-ScheduledTask`-kutsuja eikä
-Task Scheduler -tehtäviä repossa.
+**Käyttäjän säännöt:**
+
+- Tavoiteaika on klo 10 Suomen aikaa: tarkistus ti–la, normaaliajo ti ja pe,
+  aina tarkistus ensin.
+- Jos kone on klo 10 kiinni, ajo tehdään kun kone avataan, mutta vain jos New
+  Yorkin pörssi ei ole vielä auennut. Muuten ajoa ei tehdä, eikä väliin jäänyt
+  ajo siirry seuraavalle päivälle.
+- Kone ei koskaan herää tai käynnisty itsestään.
+- Ajo tehdään vain kun kone on päällä ja käyttäjä kirjautuneena, ja ikkuna
+  aukeaa aina näkyviin.
+
+**Asetukset ja miksi:**
+
+| asetus | arvo | miksi |
+|---|---|---|
+| ajastin | ti–la klo 10.00 | sama kuin `REVIEW_WEEKDAYS` ja `SCHEDULED_TIME` (`core/ajastus.py`) |
+| ajastimen aika | paikallinen, ei UTC | `New-ScheduledTaskTrigger` tallentaa ajan UTC-muodossa (`...T07:00:00Z`), jolloin ajo olisi talviajassa klo 9 ja `core/ajastus.py` hylkäisi sen joka päivä; asennus kirjoittaa ajan paikallisena ja tarkistaa tallennetun arvon |
+| `-StartWhenAvailable` | päällä | jos kone oli kiinni klo 10, ajo käynnistyy kun kone avataan; `core/ajastus.py` hylkää sen, jos se ei ole enää ajankohtainen |
+| herätys (WakeToRun) | **ei koskaan** | käyttäjän ehdoton vaatimus; asennus lukee tallennetun tehtävän takaisin ja peruu itsensä, jos herätys olisi päällä |
+| akkuvirta | sallittu | oletuksena Windows ohittaisi ajon akkuvirralla hiljaa |
+| `-LogonType Interactive` | – | vain kun käyttäjä on kirjautuneena, ikkuna näkyy, salasanaa ei tallenneta |
+| `-RunLevel Limited` | – | ei järjestelmänvalvojan oikeuksia |
+| `-MultipleInstances Parallel` | – | auki unohtunut ikkuna ei estä seuraavan päivän ajoa; ajolukko estää silti kaksi samanaikaista ajoa |
+| `-ExecutionTimeLimit` | 12 h | unohtunut ikkuna suljetaan |
+
+Toiminnon argumentissa on `-ExecutionPolicy Bypass` kuten `.cmd`-
+käynnistimissäkin, koska koneen suoritusmääritys on AllSigned.
+
+**Kokeilu heti** (ei odota klo 10:tä — `core/ajastus.py` päättää silti
+ajetaanko jotain): Tehtävien ajoitus → Sijoitusanalysaattori → Suorita, tai
+
+```
+Start-ScheduledTask -TaskName Sijoitusanalysaattori
+```
+
+**Kuiva-ajo** näyttää päätöksen ajamatta mitään:
+
+```
+.venv\Scripts\python.exe -m core.ajastus --kuiva
+```
+
+Loki on `data\ajoloki.txt`:ssä. **Jos repo siirretään** toiseen kansioon,
+asennus ajetaan uudelleen, koska skriptin polku tallentuu tehtävään.

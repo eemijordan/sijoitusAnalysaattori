@@ -1340,3 +1340,60 @@ def test_get_last_completed_run_ei_yhtaan_none(tmp_path):
     _kirjaa_ajo(polku, "kaatui", "tarkistus", "2026-10-07T10:00:00", "keskeytyi")
 
     assert tietokanta.get_last_completed_run("tarkistus", db_path=polku) is None
+
+
+# --- vaihe 6b: run_exists ja API-avainten peittaminen ---
+
+
+def test_run_exists(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    _kirjaa_ajo(polku, "olemassa", "tarkistus", "2026-10-06T10:00:00", "valmis")
+
+    assert tietokanta.run_exists("olemassa", db_path=polku) is True
+    assert tietokanta.run_exists("tuntematon", db_path=polku) is False
+
+
+def test_finish_run_peittaa_api_avaimen_kannassa_ja_arkistossa(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+    tietokanta.start_run(
+        run_id="ajo1",
+        run_type="normaali",
+        settings_json="{}",
+        model_version="1.2",
+        db_path=polku,
+    )
+
+    tietokanta.finish_run(
+        "ajo1",
+        "keskeytyi",
+        error="401 for url: https://api.twelvedata.com/stocks?apikey=salainen123",
+        db_path=polku,
+    )
+
+    virhe = tietokanta.get_run("ajo1", db_path=polku)["error"]
+    assert "apikey=***" in virhe
+    assert "salainen123" not in virhe
+    arkisto = (tietokanta.ARKISTO_DIR / "ajo1" / "_ajo.json").read_text(
+        encoding="utf-8"
+    )
+    assert "apikey=***" in arkisto
+    assert "salainen123" not in arkisto
+
+
+def test_insert_skip_peittaa_api_avaimen(tmp_path):
+    polku = tmp_path / "testi.db"
+    tietokanta.init_database(polku)
+
+    tietokanta.insert_skip(
+        run_id="ajo1",
+        symbol="TEST",
+        stage="haku_epaonnistui",
+        reason="Max retries exceeded with url: /x?apikey=salainen123 (Caused by)",
+        db_path=polku,
+    )
+
+    syy = tietokanta.get_skips("ajo1", db_path=polku)[0]["reason"]
+    assert "apikey=*** (Caused by)" in syy
+    assert "salainen123" not in syy

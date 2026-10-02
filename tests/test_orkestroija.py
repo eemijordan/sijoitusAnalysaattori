@@ -365,6 +365,32 @@ def test_kaatuneen_ajon_jalkeen_lukko_on_vapaa(tmp_path, monkeypatch):
     assert tietokanta.get_run(ajo_id, db_path=polku)["status"] == "valmis"
 
 
+def test_toistuva_run_id_vaihdetaan_seuraavaan(tmp_path, monkeypatch):
+    # Ajastettu ajo ajaa tarkistuksen ja normaaliajon perakkain samassa
+    # prosessissa - toinen ajo ei saa saada samaa sekunnin tarkkuista id:ta.
+    polku = tmp_path / "testi.db"
+    monkeypatch.setattr(orkestroija, "_data_ready_now", lambda: (True, ""))
+    monkeypatch.setattr(orkestroija, "_AGENTIT", [])
+    monkeypatch.setattr(orkestroija.time, "sleep", lambda sekunnit: None)
+    tunnisteet = iter(["20261006_100000", "20261006_100000", "20261006_100001"])
+    monkeypatch.setattr(tietokanta, "new_run_id", lambda: next(tunnisteet))
+
+    assert orkestroija.run_review(polku) == "20261006_100000"
+    assert orkestroija.run_normal(polku) == "20261006_100001"
+
+
+def test_main_peittaa_api_avaimen_virhetulosteesta(monkeypatch, capsys):
+    def _ajo():
+        raise RuntimeError("401 for url: https://x/stocks?apikey=salainen123")
+
+    monkeypatch.setattr(orkestroija, "run_normal", _ajo)
+
+    assert orkestroija.main([]) == 1
+    tuloste = capsys.readouterr().out
+    assert "apikey=***" in tuloste
+    assert "salainen123" not in tuloste
+
+
 @pytest.mark.parametrize(
     "poikkeus, odotettu_koodi, odotettu_teksti",
     [

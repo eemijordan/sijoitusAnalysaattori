@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from core import orkestroija, porssiaika, tietokanta
 from core.ajolukko import RunLockedError
+from core.loki import mask_secrets
 
 SCHEDULED_TIME = time(10, 0)  # Suomen aikaa
 REVIEW_WEEKDAYS = frozenset({1, 2, 3, 4, 5})  # ti-la; date.weekday(): ma = 0
@@ -121,13 +122,13 @@ def main(argv: list[str]) -> int:
         try:
             run_id = run()
         except orkestroija.DataNotReadyError as error:
-            print(f"DATA EI VALMIS: {error}")
+            print(f"DATA EI VALMIS: {mask_secrets(str(error))}")
             return 2
         except RunLockedError as error:
-            print(f"TOINEN AJO KAYNNISSA: {error}")
+            print(f"TOINEN AJO KAYNNISSA: {mask_secrets(str(error))}")
             return 3
         except RuntimeError as error:
-            print(f"VIRHE: {error}")
+            print(f"VIRHE: {mask_secrets(str(error))}")
             return 1
         print(f"{run_type}: valmis (ajo {run_id})")
     return 0

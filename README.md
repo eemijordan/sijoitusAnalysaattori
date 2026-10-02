@@ -70,6 +70,20 @@ scripts\aja.cmd                             # tarkistusajo
 .\scripts\aja.ps1 -Ajotyyppi molemmat       # tarkistus ensin, sitten normaali
 ```
 
+### Ajastus
+
+```bash
+scripts\ajastus_asenna.cmd      # asentaa ajastetun ajon Windowsin Tehtävien ajoitukseen
+scripts\ajastus_poista.cmd      # poistaa sen; ajot tehdään taas vain käsin
+```
+
+Ajastettu ajo tekee tarkistuksen ti–la ja normaaliajon ti ja pe klo 10 Suomen aikaa,
+aina tarkistuksen ensin. Jos kone on silloin kiinni, ajo tehdään kun kone avataan, mutta
+vain jos New Yorkin pörssi ei ole vielä auennut. Väliin jäänyt ajo ei siirry seuraavalle
+päivälle. Kone ei koskaan herää ajoa varten, ajo tehdään vain kirjautuneena, ja ikkuna
+näkyy aina. Ajastettu ajo ei aja committaamatonta `agents/`- tai `core/`-koodia.
+Tarkemmin: `scripts/README.md`.
+
 ### Milloin ajo onnistuu
 
 **Klo 07:00–16:30 Suomen aikaa, arkisin.**
@@ -126,9 +140,11 @@ jokaiseen ajoon:
 
 ## Tunnetut rajoitukset
 
-- **Ajot käynnistetään käsin.** Stop-loss toteutuu sillä viiveellä jolla tarkistusajo
-  muistetaan ajaa. Tämä on tietoinen valinta: koneella ei haluta pyöriä
-  taustaprosesseja. Epäsäännölliset välit näkyvät `runs`-taulun aikaleimoista.
+- **Stop toteutuu vasta seuraavan aamun tarkistuksessa.** Ajot tulevat ajastettuna
+  ti–la klo 10, kun kone on käytössä. Stop tarkistetaan edellisen päivän
+  päätöskurssia vastaan, ja päivinä jolloin konetta ei avata, tarkistusta ei tehdä
+  lainkaan — kone ei herää itsestään. Epäsäännölliset välit näkyvät `runs`-taulun
+  aikaleimoista.
 - **Toteutunutta historiaa on vähän.** Suljettuja kauppoja ei vielä ole tarpeeksi,
   jotta mallin toimivuudesta voisi sanoa mitään.
 - **Kaupankäyntikuluja ja liukumaa ei mallinneta.** Ostot ja myynnit tapahtuvat

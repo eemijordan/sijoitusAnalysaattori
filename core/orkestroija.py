@@ -3,6 +3,7 @@
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -10,6 +11,7 @@ from zoneinfo import ZoneInfo
 from agents import paatoksentekija, raportoija, tekninen_analyytikko, trendinmetsastaja
 from core import asetukset, loki, porssiaika, tietokanta
 from core.ajolukko import LOCK_FILENAME, RunLockedError, run_lock
+from core.loki import mask_secrets
 
 _loki = loki.get_logger(__name__)
 
@@ -114,7 +116,15 @@ def _run_agents_locked(run_type: str, db_path=tietokanta.DEFAULT_DB_PATH) -> str
         _loki.warning(f"Ajoa ei kaynnisteta: {syy}")
         raise DataNotReadyError(syy)
 
+    # run_id on sekunnin tarkkuinen aikaleima. Ajastettu ajo (core/ajastus.py)
+    # ajaa tarkistuksen ja normaaliajon perakkain samassa prosessissa - jos
+    # edellinen ajo paattyi samalla sekunnilla, id toistuisi ja start_run()
+    # kaatuisi UNIQUE-ehtoon. Lukko on jo hallussa, joten tarkistus ja lisays
+    # eivat voi kilpailla toisen ajon kanssa.
     run_id = tietokanta.new_run_id()
+    while tietokanta.run_exists(run_id, db_path=db_path):
+        time.sleep(0.2)
+        run_id = tietokanta.new_run_id()
 
     tietokanta.start_run(
         run_id=run_id,
@@ -172,13 +182,13 @@ def main(argv: list[str]) -> int:
     try:
         run()
     except DataNotReadyError as error:
-        print(f"DATA EI VALMIS: {error}")
+        print(f"DATA EI VALMIS: {mask_secrets(str(error))}")
         return 2
     except RunLockedError as error:
-        print(f"TOINEN AJO KAYNNISSA: {error}")
+        print(f"TOINEN AJO KAYNNISSA: {mask_secrets(str(error))}")
         return 3
     except RuntimeError as error:
-        print(f"VIRHE: {error}")
+        print(f"VIRHE: {mask_secrets(str(error))}")
         return 1
     return 0
 
