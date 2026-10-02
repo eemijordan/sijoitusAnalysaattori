@@ -27,6 +27,10 @@ from core import porssiaika, tietokanta  # noqa: E402
 st.set_page_config(page_title="Sijoitusanalysaattori", layout="wide")
 st.title("Sijoitusanalysaattori")
 
+# Pisteytys on jatkuva 0,1 tarkkuudella (vaihe 2k) - ilman muotoilua 7,3
+# voisi nakya vaarin.
+_RR_PISTEET_SARAKE = {"RR-pisteet": st.column_config.NumberColumn(format="%.1f")}
+
 
 def _turvallinen_haku(funktio, *args, **kwargs):
     """Ajaa lukufunktion ja nappaa tietokantalukon siistiksi viestiksi.
@@ -166,7 +170,12 @@ with ylarivi[1], st.container(border=True):
                 "omistus": "Omistus",
             }
         )
-        st.dataframe(_tyhjat_viivoiksi(df), hide_index=True, width="stretch")
+        st.dataframe(
+            _tyhjat_viivoiksi(df),
+            hide_index=True,
+            width="stretch",
+            column_config=_RR_PISTEET_SARAKE,
+        )
 
 with ylarivi[2], st.container(border=True):
     st.subheader("Omistukset")
@@ -303,7 +312,12 @@ else:
                     "rr_ratio": "RR-suhde",
                 }
             )
-            st.dataframe(_tyhjat_viivoiksi(df), hide_index=True, width="stretch")
+            st.dataframe(
+                _tyhjat_viivoiksi(df),
+                hide_index=True,
+                width="stretch",
+                column_config=_RR_PISTEET_SARAKE,
+            )
 
         # Tyhja osio jatetaan kokonaan pois - tyhja otsikko olisi kohinaa
         # (ks. CLAUDE.md, vaihe 2i). Nakyy vain kun tama ajo oikeasti ohitti

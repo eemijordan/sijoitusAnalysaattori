@@ -47,6 +47,34 @@ PRICE_HISTORY_DAYS = 252
 SMA50_PERIOD = 50
 SMA200_PERIOD = 200
 
+# Pistemallin kiintopisteet (vaihe 2k, ks. CLAUDE.md). Jokainen osa on
+# paloittain lineaarinen naiden pisteiden kautta, jotta hiuksenhieno ero
+# syotteessa ei muuta pisteita kokonaisella pisteella. Vaihteluvalit ja muoto
+# ovat samat kuin vanhoissa portaissa - vain jyrkanteet on tasoitettu
+# rampeiksi. Tarkoituksella taalla eika asetukset.py:ssa: snapshot_settings()
+# tallentaa vain skalaareja, joten tuplet eivat nakyisi settings_json:issa.
+# Kaava on koodia, ja runs.git_commit kertoo mika versio oli kaytossa.
+#
+# Riski (ATR % hinnasta), 0-3: suora viiva vanhojen kaistojen
+# keskipisteiden kautta (1->3, 3->2, 5->1, 7->0).
+RISK_POINTS = ((1.0, 3.0), (7.0, 0.0))
+# Trendi, 0-2 per vertailu (hinta/SMA50, SMA50/SMA200): ramppi tasapisteen
+# ymparilla, suhde <= 1 - TREND_RAMP -> 0, >= 1 + TREND_RAMP -> 2.
+TREND_RAMP = 0.02
+# Asema 52 viikon vaihteluvalissa (%), 0-2: vanhat jyrkanteet 40 %:ssa ja
+# 85 %:ssa korvattu +-5 prosenttiyksikon rampeilla.
+POSITION_POINTS = ((35.0, 0.0), (45.0, 2.0), (80.0, 2.0), (90.0, 1.0))
+# Momentti (RSI), -2...+1: vanhat jyrkanteet 30:ssa, 40:ssa, 65:ssa ja
+# 75:ssa korvattu +-5 pisteen rampeilla.
+RSI_POINTS = (
+    (25.0, -1.0),
+    (35.0, 0.0),
+    (45.0, 1.0),
+    (60.0, 1.0),
+    (70.0, 0.0),
+    (80.0, -2.0),
+)
+
 
 def _is_rate_limit_error(response: requests.Response, data) -> bool:
     return response.status_code == 429 or (
@@ -478,48 +506,79 @@ def _build_rationale(
     rsi_score,
     score,
 ) -> str:
+    # Osat yhdella desimaalilla. Ne eivat valttamatta summaudu tasmalleen
+    # naytettyyn kokonaisuuteen pyoristyksen takia (ks. CLAUDE.md, vaihe 2k).
+    def points(value: float) -> str:
+        return f"({value:.1f} p)".replace(".", ",")
+
     if atr_pct is not None:
-        atr_text = f"ATR {atr_pct:.1f} % ({risk_score} p)".replace(".", ",")
+        atr_text = f"ATR {atr_pct:.1f} %".replace(".", ",") + f" {points(risk_score)}"
     else:
-        atr_text = f"ATR puuttuu ({risk_score} p)"
+        atr_text = f"ATR puuttuu {points(risk_score)}"
 
     if sma50 is None:
         trend_text = (
-            f"SMA50 ei laskettavissa (vain {history_days} paivaa historiaa) (0 p)"
+            f"SMA50 ei laskettavissa (vain {history_days} paivaa historiaa) {points(0)}"
         )
     elif sma200 is None:
         direction = "yli SMA50" if current_price > sma50 else "alle SMA50"
         trend_text = (
             f"{direction}, SMA200 ei laskettavissa (vain {history_days} paivaa "
-            f"historiaa) ({trend_score} p)"
+            f"historiaa) {points(trend_score)}"
         )
     elif current_price > sma50 and sma50 > sma200:
-        trend_text = f"yli SMA50 ja SMA200 ({trend_score} p)"
+        trend_text = f"yli SMA50 ja SMA200 {points(trend_score)}"
     else:
         price_vs_sma50 = "yli SMA50" if current_price > sma50 else "alle SMA50"
         sma50_vs_sma200 = "yli SMA200" if sma50 > sma200 else "alle SMA200"
         trend_text = (
-            f"hinta {price_vs_sma50}, SMA50 {sma50_vs_sma200} ({trend_score} p)"
+            f"hinta {price_vs_sma50}, SMA50 {sma50_vs_sma200} {points(trend_score)}"
         )
 
     if position_pct is not None:
-        position_text = f"{position_pct:.0f} % vaihteluvalista ({position_score} p)"
+        position_text = f"{position_pct:.0f} % vaihteluvalista {points(position_score)}"
     else:
-        position_text = f"52 viikon vaihteluvali ei laskettavissa ({position_score} p)"
+        position_text = (
+            f"52 viikon vaihteluvali ei laskettavissa {points(position_score)}"
+        )
 
     if rsi is not None:
-        rsi_text = f"RSI {rsi:.0f} ({rsi_score} p)"
+        rsi_text = f"RSI {rsi:.0f} {points(rsi_score)}"
     else:
-        rsi_text = f"RSI puuttuu ({rsi_score} p)"
+        rsi_text = f"RSI puuttuu {points(rsi_score)}"
 
-    score_text = f"{score:g}".replace(".", ",")
+    score_text = f"{score:.1f}".replace(".", ",")
     return f"{atr_text}, {trend_text}, {position_text}, {rsi_text} = {score_text}"
+
+
+def _interpolate(x: float, points: tuple[tuple[float, float], ...]) -> float:
+    """Paloittain lineaarinen arvo pisteiden kautta.
+
+    Ensimmäisen pisteen alapuolella ja viimeisen yläpuolella arvo on vakio
+    (ensimmäisen tai viimeisen pisteen arvo).
+    """
+    if x <= points[0][0]:
+        return points[0][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return points[-1][1]
+
+
+def _trend_part(ratio: float) -> float:
+    """Yhden trendivertailun pisteet 0-2: ramppi tasapisteen 1,0 ympärillä."""
+    return _interpolate(ratio, ((1.0 - TREND_RAMP, 0.0), (1.0 + TREND_RAMP, 2.0)))
 
 
 def calculate_score(
     price_data: dict, atr: float | None, rsi: float | None
 ) -> tuple[float, dict, str]:
     """Laskee risk/reward-pisteet (0-10) riskin, trendin, aseman ja RSI:n summana.
+
+    Jokainen osa on jatkuva (paloittain lineaarinen, ks. RISK_POINTS ym.) ja
+    lasketaan täydellä tarkkuudella; summa rajataan välille 0-10 ja
+    pyöristetään kerran yhteen desimaaliin. Pyöristetty arvo on se joka
+    tallennetaan ja jolla Agentti 3 päättää (vaihe 2k).
 
     Palauttaa (pisteet, indikaattorit, perustelu).
     """
@@ -533,55 +592,36 @@ def calculate_score(
     # RISKI: ATR suhteessa nykyhintaan.
     if atr is not None and current_price > 0:
         atr_pct = atr / current_price * 100
-        if atr_pct < 2:
-            risk_score = 3
-        elif atr_pct < 4:
-            risk_score = 2
-        elif atr_pct < 6:
-            risk_score = 1
-        else:
-            risk_score = 0
+        risk_score = _interpolate(atr_pct, RISK_POINTS)
     else:
         atr_pct = None
-        risk_score = 0
+        risk_score = 0.0
 
-    # TRENDI: hinta > SMA50 (+2), SMA50 > SMA200 (+2). Puuttuva SMA200 -
+    # TRENDI: hinta/SMA50 (0-2) + SMA50/SMA200 (0-2). Puuttuva SMA200 -
     # yleensa alle 200 pv historiaa - jattaa vain jalkimmaisen osan pois,
     # ei olettaa sita nollaksi aanettomasti (nakyy perustelussa).
-    trend_score = 0
-    if sma50 is not None and current_price > sma50:
-        trend_score += 2
-    if sma50 is not None and sma200 is not None and sma50 > sma200:
-        trend_score += 2
+    trend_score = 0.0
+    if sma50 is not None and sma50 > 0:
+        trend_score += _trend_part(current_price / sma50)
+        if sma200 is not None and sma200 > 0:
+            trend_score += _trend_part(sma50 / sma200)
 
-    # ASEMA 52 viikon vaihteluvalissa.
+    # ASEMA 52 viikon vaihteluvalissa: paras keskialueella, venynyt
+    # ylapaa saa vahemman.
     if high_52w is not None and low_52w is not None and high_52w > low_52w:
         position_pct = (current_price - low_52w) / (high_52w - low_52w) * 100
-        if 40 <= position_pct <= 85:
-            position_score = 2
-        elif position_pct > 85:
-            position_score = 1  # venynyt
-        else:
-            position_score = 0
+        position_score = _interpolate(position_pct, POSITION_POINTS)
     else:
         position_pct = None
-        position_score = 0
+        position_score = 0.0
 
     # MOMENTTI (RSI).
-    if rsi is not None:
-        if 40 <= rsi <= 65:
-            rsi_score = 1
-        elif rsi > 75:
-            rsi_score = -2
-        elif rsi < 30:
-            rsi_score = -1
-        else:
-            rsi_score = 0
-    else:
-        rsi_score = 0
+    rsi_score = _interpolate(rsi, RSI_POINTS) if rsi is not None else 0.0
 
+    # Pyoristetaan kerran, vasta summasta - tama arvo tallennetaan ja silla
+    # paatetaan, joten naytetty arvo on aina se jolla paatettiin.
     score_before_clamp = risk_score + trend_score + position_score + rsi_score
-    score = max(0, min(10, score_before_clamp))
+    score = round(max(0.0, min(10.0, score_before_clamp)), 1)
 
     indicators = {
         "current_price": current_price,

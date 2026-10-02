@@ -55,10 +55,10 @@ def test_taysi_pistemaara_antaa_10():
     price_data = _price_data(
         current_price=100.0, sma50=90.0, sma200=80.0, high_52w=120.0, low_52w=60.0
     )
-    # riski: atr 1.5/100=1.5% -> 3p. trendi: 100>90 ja 90>80 -> 4p.
-    # asema: (100-60)/(120-60)=66.7% -> 2p. rsi 50 (40-65) -> 1p. Yht=10.
+    # riski: atr 1.0/100=1.0% -> 3p. trendi: 100/90 ja 90/80 > 1,02 -> 4p.
+    # asema: (100-60)/(120-60)=66.7% -> 2p. rsi 50 (45-60) -> 1p. Yht=10.
     score, indicators, rationale = tekninen_analyytikko.calculate_score(
-        price_data, atr=1.5, rsi=50.0
+        price_data, atr=1.0, rsi=50.0
     )
 
     assert score == 10
@@ -72,11 +72,12 @@ def test_regressio_calculate_score_ei_muutu_stop_ja_tavoite_lisayksessa():
     # Vaihe 2g lisasi calculate_stop_and_target()-funktion mutta calculate_score()
     # itse ei saa muuttua: sama syote -> tasmalleen sama pistemaara, indikaattorit
     # ja perustelu kuin ennen tata vaihetta, eika stop/tavoite kuulu tahan paluuarvoon.
+    # Vaihe 2k: atr 1.5 -> 1.0, jotta riski on yha tasan 3 jatkuvalla kaavalla.
     price_data = _price_data(
         current_price=100.0, sma50=90.0, sma200=80.0, high_52w=120.0, low_52w=60.0
     )
     score, indicators, rationale = tekninen_analyytikko.calculate_score(
-        price_data, atr=1.5, rsi=50.0
+        price_data, atr=1.0, rsi=50.0
     )
 
     assert score == 10
@@ -92,7 +93,7 @@ def test_regressio_calculate_score_ei_muutu_stop_ja_tavoite_lisayksessa():
 def test_matala_volatiliteetti_saa_riskista_3_korkea_0():
     price_data = _price_data(current_price=100.0)
 
-    _, matala, _ = tekninen_analyytikko.calculate_score(price_data, atr=1.5, rsi=None)
+    _, matala, _ = tekninen_analyytikko.calculate_score(price_data, atr=1.0, rsi=None)
     _, korkea, _ = tekninen_analyytikko.calculate_score(price_data, atr=10.0, rsi=None)
 
     assert matala["risk_score"] == 3
@@ -182,6 +183,219 @@ def test_puuttuva_atr_ja_rsi_eivat_kaada_laskentaa():
     assert "ATR puuttuu" in rationale
     assert "RSI puuttuu" in rationale
     assert score == 4  # pelkka trendi (2+2)
+
+
+# --- Vaihe 2k: jatkuva pisteytys ---
+
+_PISTEET = ((0.0, 0.0), (10.0, 4.0), (20.0, 4.0))
+
+
+def test_interpolate_ensimmaisen_pisteen_alapuolella():
+    assert tekninen_analyytikko._interpolate(-5.0, _PISTEET) == 0.0
+
+
+def test_interpolate_viimeisen_pisteen_ylapuolella():
+    assert tekninen_analyytikko._interpolate(99.0, _PISTEET) == 4.0
+
+
+def test_interpolate_tasan_kiintopisteessa():
+    assert tekninen_analyytikko._interpolate(10.0, _PISTEET) == 4.0
+
+
+def test_interpolate_puolivalissa_keskiarvo():
+    assert tekninen_analyytikko._interpolate(5.0, _PISTEET) == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        tekninen_analyytikko.RISK_POINTS,
+        tekninen_analyytikko.POSITION_POINTS,
+        tekninen_analyytikko.RSI_POINTS,
+    ],
+)
+def test_jokainen_kiintopiste_palauttaa_arvonsa(points):
+    for x, y in points:
+        assert tekninen_analyytikko._interpolate(x, points) == pytest.approx(y)
+
+
+@pytest.mark.parametrize("ratio, odotus", [(0.97, 0.0), (1.0, 1.0), (1.03, 2.0)])
+def test_trendin_ramppi_per_vertailu(ratio, odotus):
+    assert tekninen_analyytikko._trend_part(ratio) == pytest.approx(odotus)
+
+
+def test_trendi_kumpikin_vertailu_rampilla():
+    # hinta/SMA50 = 1,0 -> 1p, SMA50/SMA200 = 0,97 -> 0p
+    price_data = _price_data(current_price=100.0, sma50=100.0, sma200=100.0 / 0.97)
+
+    _, indicators, _ = tekninen_analyytikko.calculate_score(
+        price_data, atr=None, rsi=None
+    )
+
+    assert indicators["trend_score"] == pytest.approx(1.0)
+
+
+def test_puuttuva_sma200_trendin_jalkimmainen_osa_0():
+    # hinta/SMA50 = 1,0 -> 1p; SMA200 puuttuu -> jalkimmainen osa 0 eika virhe
+    price_data = _price_data(current_price=100.0, sma50=100.0, sma200=None)
+
+    _, indicators, _ = tekninen_analyytikko.calculate_score(
+        price_data, atr=None, rsi=None
+    )
+
+    assert indicators["trend_score"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "points, raja",
+    [
+        (tekninen_analyytikko.RISK_POINTS, 2.0),
+        (tekninen_analyytikko.RISK_POINTS, 4.0),
+        (tekninen_analyytikko.RISK_POINTS, 6.0),
+        (tekninen_analyytikko.RSI_POINTS, 30.0),
+        (tekninen_analyytikko.RSI_POINTS, 40.0),
+        (tekninen_analyytikko.RSI_POINTS, 65.0),
+        (tekninen_analyytikko.RSI_POINTS, 75.0),
+        (tekninen_analyytikko.POSITION_POINTS, 40.0),
+        (tekninen_analyytikko.POSITION_POINTS, 85.0),
+    ],
+)
+def test_ei_jyrkanteita_vanhoilla_porrasrajoilla(points, raja):
+    # Vanha porrasfunktio hyppasi naissa kohdissa kokonaisella pisteella tai
+    # kahdella; jatkuvalla kaavalla 0,02 yksikon muutos liikuttaa osaa vahan.
+    alle = tekninen_analyytikko._interpolate(raja - 0.01, points)
+    yli = tekninen_analyytikko._interpolate(raja + 0.01, points)
+
+    assert abs(yli - alle) < 0.05
+
+
+def test_ei_jyrkannetta_trendin_tasapisteessa():
+    # Kattaa seka hinta/SMA50:n etta SMA50/SMA200:n - sama _trend_part().
+    # Suhde ilmaistaan tassa prosentteina kuten ATR % ja asema: 0,02 yksikon
+    # muutos = 0,02 %-yks. = suhteessa 0,0002. (0,02 suhdeyksikkoa olisi
+    # puolet koko rampista ja liikuttaisi osaa 1,0 p - tarkoituksella.)
+    alle = tekninen_analyytikko._trend_part(1.0 - 0.0001)
+    yli = tekninen_analyytikko._trend_part(1.0 + 0.0001)
+
+    assert abs(yli - alle) < 0.05
+
+
+@pytest.mark.parametrize("atr", [0.5, 1.37, 2.0, 3.3333, 5.9])
+@pytest.mark.parametrize("rsi", [None, 33.3, 47.77, 72.1])
+def test_tulos_on_aina_pyoristetty_yhteen_desimaaliin(atr, rsi):
+    price_data = _price_data(
+        current_price=97.3, sma50=96.1, sma200=98.7, high_52w=120.0, low_52w=60.0
+    )
+
+    score, _, _ = tekninen_analyytikko.calculate_score(price_data, atr=atr, rsi=rsi)
+
+    assert score == round(score, 1)
+
+
+def test_summa_yli_10_rajataan_10een(monkeypatch):
+    # Pistemallin ylaraja on rakenteellisesti 10 (3+4+2+1), joten rajaus
+    # ylospain testataan korottamalla riskiosan kiintopisteita.
+    monkeypatch.setattr(tekninen_analyytikko, "RISK_POINTS", ((1.0, 9.0), (7.0, 9.0)))
+    price_data = _price_data(
+        current_price=100.0, sma50=90.0, sma200=80.0, high_52w=120.0, low_52w=60.0
+    )
+
+    score, indicators, _ = tekninen_analyytikko.calculate_score(
+        price_data, atr=1.0, rsi=50.0
+    )
+
+    assert indicators["score_before_clamp"] == pytest.approx(16.0)
+    assert score == 10.0
+
+
+@pytest.mark.parametrize(
+    "price_data, atr, rsi, odotus",
+    [
+        # OTIS 14.9. - vanha porraskaava antoi 4
+        (
+            dict(
+                current_price=69.099998,
+                sma50=72.10859980000001,
+                sma200=79.61724991999999,
+                high_52w=94.565,
+                low_52w=67.64,
+            ),
+            1.3791,
+            40.0039461,
+            3.0,
+        ),
+        # CVCO 30.9. - vanha porraskaava antoi 7 (ostettiin)
+        (
+            dict(
+                current_price=556.12,
+                sma50=565.6583993,
+                sma200=558.503899155,
+                high_52w=713.01001,
+                low_52w=443.34,
+            ),
+            17.39645,
+            51.21968,
+            6.1,
+        ),
+        # MSFT - vanha 9
+        (
+            dict(
+                current_price=490.29999,
+                sma50=460.2040001,
+                sma200=431.53924967,
+                high_52w=553.71997,
+                low_52w=349.20001,
+            ),
+            10.83043,
+            51.71656,
+            9.4,
+        ),
+        # KMX 14.9. - vanha 8
+        (
+            dict(
+                current_price=61.32,
+                sma50=58.458599926,
+                sma200=46.8108499645,
+                high_52w=65.28,
+                low_52w=30.26,
+            ),
+            1.84858,
+            54.051132,
+            8.1,
+        ),
+    ],
+    ids=["OTIS", "CVCO", "MSFT", "KMX"],
+)
+def test_oikea_data_kiinteat_odotusarvot(price_data, atr, rsi, odotus):
+    # Syotteet suoraan kannan indicators_json:ista; odotusarvot laskettu
+    # speksin kaavalla erillisella viitetoteutuksella. Jos tama hajoaa, etsi
+    # virhe toteutuksesta, ala muuta odotusarvoja.
+    score, _, _ = tekninen_analyytikko.calculate_score(
+        _price_data(history_days=252, **price_data), atr=atr, rsi=rsi
+    )
+
+    assert score == odotus
+
+
+def test_perustelu_nayttaa_osat_yhdella_desimaalilla():
+    price_data = _price_data(
+        current_price=556.12,
+        sma50=565.6583993,
+        sma200=558.503899155,
+        high_52w=713.01001,
+        low_52w=443.34,
+        history_days=252,
+    )
+
+    _, _, rationale = tekninen_analyytikko.calculate_score(
+        price_data, atr=17.39645, rsi=51.21968
+    )
+
+    assert "(1,9 p)" in rationale  # riski
+    assert "(1,8 p)" in rationale  # trendi
+    assert "(1,4 p)" in rationale  # asema
+    assert "(1,0 p)" in rationale  # RSI
+    assert rationale.endswith("= 6,1")
 
 
 # --- is_bar_ready(): puhdas logiikka, ei kelloa eika verkkoa ---
