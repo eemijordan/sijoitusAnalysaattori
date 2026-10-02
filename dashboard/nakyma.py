@@ -1,4 +1,8 @@
-"""Streamlit-nakyma: yksi nappi ajolle, kuusi ruutua edellisen ajon tuloksille.
+"""Streamlit-nakyma: kaksi ajonappia, salkun tuotto ja valitun ajon tulokset.
+
+Asettelu on kolmessa osassa: ylarivi (Hallinta, Parhaat pisteet,
+Omistukset), salkun tuotto SPY:hyn verrattuna (vaihe 5d) ja valitun ajon
+tulokset (Agentit 1-3).
 
 Nakyma on pelkka lukija - se kayttaa vain core/tietokanta.py:n get_*-funktioita.
 Ainoa kirjoittaja on aliprosessina ajettava core.orkestroija (ks. _aja_orkestroija).
@@ -12,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -23,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from core import porssiaika, tietokanta  # noqa: E402
+from core.asetukset import BENCHMARK_SYMBOL  # noqa: E402
 
 st.set_page_config(page_title="Sijoitusanalysaattori", layout="wide")
 st.title("Sijoitusanalysaattori")
@@ -65,6 +71,138 @@ def _tyhjat_viivoiksi(df: pd.DataFrame) -> pd.DataFrame:
         if df[sarake].isna().any():
             df[sarake] = df[sarake].apply(lambda arvo: "-" if pd.isna(arvo) else arvo)
     return df
+
+
+def _suomi_pvm(pvm: str) -> str:
+    """Muuntaa ISO-päivämäärän (2026-09-07) suomalaiseen muotoon (7.9.2026).
+
+    Ei strftime("%-d"): se ei toimi Windowsissa.
+    """
+    vuosi, kuukausi, paiva = pvm.split("-")
+    return f"{int(paiva)}.{int(kuukausi)}.{vuosi}"
+
+
+def _muotoile_tuotto(arvo: float | None, yksikko: str = "%") -> str:
+    """Muotoilee tuoton etumerkillä ja kahdella desimaalilla, tyhjän viivaksi."""
+    if pd.isna(arvo):
+        return "-"
+    return f"{arvo:+.2f} {yksikko}"
+
+
+def _tuottosarja(tilannekuvat: list[dict]) -> pd.DataFrame:
+    """Muuntaa tilannekuvat tuottosarjaksi: yksi rivi per päivä (vaihe 5d).
+
+    Lähtöpiste on ensimmäinen tilannekuva jolla on vertailukurssi - sama
+    sääntö kuin Agentti 4:llä (agents/raportoija.py), jotta viimeinen rivi on
+    sama luku kuin tarkistusajon lokirivi. Sitä aiemmat tilannekuvat jäävät
+    pois. Samalta päivältä käytetään viimeisintä tilannekuvaa (lista on
+    id-järjestyksessä). Tuotot prosentteina, pyöristämättä.
+    """
+    sarakkeet = ["pvm", "salkku_pct", "vertailu_pct", "ero_pct"]
+    lahto_indeksi = next(
+        (
+            indeksi
+            for indeksi, kuva in enumerate(tilannekuvat)
+            if kuva["benchmark_price"] is not None
+        ),
+        None,
+    )
+    if lahto_indeksi is None:
+        return pd.DataFrame(columns=sarakkeet)
+    lahto = tilannekuvat[lahto_indeksi]
+
+    paivan_viimeisin: dict[str, dict] = {}
+    for kuva in tilannekuvat[lahto_indeksi:]:
+        paivan_viimeisin[kuva["snapshot_date"]] = kuva
+
+    rivit = []
+    for pvm, kuva in paivan_viimeisin.items():
+        salkku = (kuva["total_value"] / lahto["total_value"] - 1) * 100
+        vertailu = None
+        ero = None
+        if kuva["benchmark_price"] is not None:
+            vertailu = (kuva["benchmark_price"] / lahto["benchmark_price"] - 1) * 100
+            ero = salkku - vertailu
+        rivit.append(
+            {"pvm": pvm, "salkku_pct": salkku, "vertailu_pct": vertailu, "ero_pct": ero}
+        )
+    return pd.DataFrame(rivit, columns=sarakkeet)
+
+
+def _tuottokaavio(sarja: pd.DataFrame, vertailu_nimi: str) -> alt.LayerChart:
+    """Piirtää salkun ja vertailuindeksin tuoton viivoina samalle akselille.
+
+    Värit on tarkistettu värisokeus- ja kontrastitarkistimella sekä vaaleaa
+    (#ffffff) että tummaa (#0e1117) Streamlit-taustaa vasten, joten samat
+    heksat toimivat molemmissa teemoissa. Vain yksi y-akseli.
+    """
+    salkku_vari = "#2a78d6"
+    vertailu_vari = "#d95926"
+    apuviivan_vari = "#898781"
+
+    pitka = sarja.melt(
+        id_vars=["pvm"],
+        value_vars=["salkku_pct", "vertailu_pct"],
+        var_name="sarja",
+        value_name="tuotto",
+    ).dropna(subset=["tuotto"])
+    pitka["sarja"] = pitka["sarja"].map(
+        {"salkku_pct": "Salkku", "vertailu_pct": vertailu_nimi}
+    )
+    levea = sarja.assign(
+        paiva=sarja["pvm"].map(_suomi_pvm),
+        salkku=sarja["salkku_pct"].map(_muotoile_tuotto),
+        vertailu=sarja["vertailu_pct"].map(_muotoile_tuotto),
+        ero=sarja["ero_pct"].map(lambda arvo: _muotoile_tuotto(arvo, "%-yks")),
+    )
+
+    x = alt.X(
+        "pvm:T",
+        title=None,
+        scale=alt.Scale(type="utc"),
+        axis=alt.Axis(format="%-d.%-m.", labelAngle=0, grid=False),
+    )
+    pohja = alt.Chart(pitka).encode(
+        x=x,
+        y=alt.Y(
+            "tuotto:Q", title="Tuotto aloituksesta (%)", axis=alt.Axis(format=".1f")
+        ),
+        color=alt.Color(
+            "sarja:N",
+            title=None,
+            scale=alt.Scale(
+                domain=["Salkku", vertailu_nimi], range=[salkku_vari, vertailu_vari]
+            ),
+            legend=alt.Legend(orient="top", symbolType="stroke"),
+        ),
+    )
+    viivat = pohja.mark_line(strokeWidth=2, strokeCap="round", strokeJoin="round")
+    pisteet = pohja.mark_point(filled=True, size=50, opacity=1)
+    nollaviiva = (
+        alt.Chart()
+        .mark_rule(color=apuviivan_vari, strokeWidth=1)
+        .encode(y=alt.datum(0))
+    )
+
+    valinta = alt.selection_point(
+        nearest=True, on="pointerover", fields=["pvm"], empty=False
+    )
+    hiusviiva = (
+        alt.Chart(levea)
+        .mark_rule(color=apuviivan_vari, strokeWidth=1)
+        .encode(
+            x=x,
+            opacity=alt.when(valinta).then(alt.value(1)).otherwise(alt.value(0)),
+            tooltip=[
+                alt.Tooltip("paiva:N", title="Päivä"),
+                alt.Tooltip("salkku:N", title="Salkku"),
+                alt.Tooltip("vertailu:N", title=vertailu_nimi),
+                alt.Tooltip("ero:N", title="Ero"),
+            ],
+        )
+        .add_params(valinta)
+    )
+    return alt.layer(nollaviiva, viivat, pisteet, hiusviiva).properties(height=300)
 
 
 def _ajoikkuna_huomautus(nyt_et: datetime) -> str | None:
@@ -207,6 +345,48 @@ with ylarivi[2], st.container(border=True):
             }
         )
         st.dataframe(_tyhjat_viivoiksi(df), hide_index=True, width="stretch")
+
+with st.container(border=True):
+    st.subheader("Salkun tuotto")
+    tuoton_kuvat, virhe_tuotto = _turvallinen_haku(tietokanta.get_snapshots)
+    if virhe_tuotto:
+        st.info(virhe_tuotto)
+    else:
+        sarja = _tuottosarja(tuoton_kuvat or [])
+        if sarja.empty:
+            st.caption(
+                "Ei vielä tilannekuvia. Tilannekuva syntyy, kun ajat "
+                "Tarkista omistukset."
+            )
+        else:
+            viimeisin = sarja.iloc[-1]
+            luvut = st.columns(3)
+            luvut[0].metric(
+                "Salkku",
+                _muotoile_tuotto(viimeisin["salkku_pct"]),
+                help="Koko salkun (käteinen + osakkeet) tuotto lähtöpisteestä.",
+            )
+            luvut[1].metric(
+                BENCHMARK_SYMBOL,
+                _muotoile_tuotto(viimeisin["vertailu_pct"]),
+                help="Vertailuindeksin tuotto samalta ajalta.",
+            )
+            luvut[2].metric(
+                f"Ero {BENCHMARK_SYMBOL}:hyn",
+                _muotoile_tuotto(viimeisin["ero_pct"], "%-yks"),
+                help="Salkun tuotto miinus vertailuindeksin tuotto.",
+            )
+            st.caption(
+                f"Lähtöpiste {_suomi_pvm(sarja.iloc[0]['pvm'])} · viimeisin "
+                f"tilannekuva {_suomi_pvm(viimeisin['pvm'])} · {len(sarja)} "
+                "mittauspäivää. Tilannekuva syntyy vain Tarkista omistukset -ajossa."
+            )
+            if len(sarja) >= 2:
+                st.altair_chart(_tuottokaavio(sarja, BENCHMARK_SYMBOL), width="stretch")
+            else:
+                st.caption(
+                    "Graafi piirtyy, kun tilannekuvia on vähintään kahdelta päivältä."
+                )
 
 st.divider()
 st.subheader("Valitun ajon tulokset")
