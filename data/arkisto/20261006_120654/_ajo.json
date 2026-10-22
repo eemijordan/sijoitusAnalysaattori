@@ -1,0 +1,11 @@
+{
+  "run_id": "20261006_120654",
+  "run_type": "normaali",
+  "started_at": "2026-10-06T12:06:54",
+  "finished_at": "2026-10-06T12:10:58",
+  "status": "valmis",
+  "error": null,
+  "settings_json": "{\"MODEL_VERSION\": \"1.2\", \"INITIAL_CAPITAL\": 10000, \"POSITION_SIZE\": 1000, \"MAX_POSITIONS\": 10, \"RR_THRESHOLD\": 7, \"CANDIDATE_TARGET\": 20, \"MAX_SELECTED\": 8, \"CANDIDATE_THRESHOLD\": 4, \"MIN_SHARE_PRICE\": 5.0, \"CO_OCCURRENCE_THRESHOLD\": 3, \"MIN_DAILY_TURNOVER\": 5000000, \"MAX_PRICE_DRIFT\": 0.05, \"PORTFOLIO_STOP_LEVEL\": 0.8, \"SWING_MIN_MOVE_WEEKLY\": 0.1, \"SWING_MIN_MOVE_DAILY\": 0.05, \"STOP_MAX_DISTANCE\": 0.2, \"EMA_HISTORY_DAYS\": 1000, \"EMA_FAST_PERIOD\": 20, \"EMA_SLOW_PERIOD\": 100, \"MAX_BUYS_PER_RUN\": 2, \"REPURCHASE_COOLDOWN_DAYS\": 30, \"BENCHMARK_SYMBOL\": \"SPY\"}",
+  "model_version": "1.2",
+  "git_commit": "6304b6382479435b22a11e99e624d1b88d4d536d"
+}
