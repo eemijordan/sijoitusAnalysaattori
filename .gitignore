@@ -4,5 +4,10 @@ __pycache__/
 *.pyc
 data/*
 !data/arkisto/
+# FMP:n raakavastaukset vain koneelle: kayttoehdot kieltavat julkaisun.
+# Ajojen omat _ajo.json-tiedostot versioidaan.
+data/arkisto/*/*
+!data/arkisto/*/_ajo.json
+*.bkp
 .pytest_cache/
 Claude outputs/

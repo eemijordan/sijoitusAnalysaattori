@@ -151,6 +151,9 @@ jokaiseen ajoon:
   päätöskurssiin.
 - **Pyhäpäiviä ei tunneta kalenterista.** Kellonaikaan perustuva ennakkotarkistus
   päästää pyhäpäivän läpi, jolloin varsinainen datatarkistus keskeyttää ajon.
+- **FMP:n raakadata ei ole repossa.** Financial Modeling Prepin käyttöehdot kieltävät
+  datan julkaisemisen, joten ajojen syötteet tallentuvat vain paikalliseen
+  `data/arkisto/`-kansioon. Reposta löytyvät vain ajojen omat `_ajo.json`-tiedostot.
 
 ## Kehityksestä
 
