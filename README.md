@@ -1,17 +1,41 @@
 # sijoitusAnalysaattori
 
-Sääntöpohjainen osakeanalyysijärjestelmä, joka hakee dataa kahdesta ulkoisesta
-rajapinnasta, pisteyttää löytämänsä osakkeet ja ylläpitää **fiktiivistä 10 000
-dollarin salkkua**.
+Sääntöpohjainen osakeanalyysijärjestelmä, joka etsii, pisteyttää ja seuraa osakkeita
+automaattisesti. Neljä agenttia hakee dataa kahdesta rajapinnasta, analysoi ehdokkaat
+teknisesti ja hoitaa **fiktiivistä 10 000 dollarin salkkua**. Jokainen osto ja myynti
+tallentuu perusteluineen.
 
-> Oikeaa rahaa ei liiku missään vaiheessa. Projekti on rakennettu mittaamaan
-> toimiiko pisteytysmalli, ei käymään kauppaa. Tämä ei ole sijoitusneuvontaa.
+Salkun tuottoa verrataan SPY:hyn eli S&P 500 -indeksiä seuraavaan ETF:ään.
+Nousumarkkinassa lähes mikä tahansa salkku näyttää voittoa, joten vain ero
+vertailuindeksiin kertoo, toimiiko malli.
 
-Salkun tuottoa verrataan SPY:hyn eli S&P 500 -indeksiä seuraavaan ETF:ään. Vertailu on
-koko projektin ydin: nousumarkkinassa lähes mikä tahansa osakesalkku näyttää voittoa,
-joten absoluuttinen tuotto ei kerro mallista mitään. Vain ero vertailuindeksiin kertoo.
+**Keskeiset ratkaisut**
+
+- **Selkeä arkkitehtuuri.** Agentit eivät kutsu toisiaan, vaan jakavat tiedon yhden
+  SQLite-kannan kautta. Jokaisen vaiheen voi tarkastaa ja testata erikseen.
+- **Luotettava data.** Järjestelmä kieltäytyy ajamasta kesken olevalla pörssipäivällä,
+  ja jokainen ohitettu osake kirjataan syineen.
+- **Jäljitettävyys.** Jokainen ajo tallentaa mallin version, vakiot ja git-commitin,
+  joten jälkikäteen näkee, millä säännöillä mikäkin päätös tehtiin.
+- **Testattavuus.** Yli 400 testiä. Pisteytys ja päätökset ovat puhtaita funktioita,
+  joita voi testata ilman verkkoa ja tietokantaa.
+- **Automaatio.** Ajot käynnistyvät Windowsin Tehtävien ajoituksella, ajolukko estää
+  päällekkäiset ajot, ja Streamlit-näkymä näyttää salkun tuoton suhteessa SPY:hyn.
+- **Vastuullinen datankäsittely.** API-avaimet peitetään lokeista ja tietokannasta, eikä
+  FMP:n raakadataa julkaista palvelun käyttöehtojen vuoksi.
+
+`Python` · `SQLite` · `pandas` · `Streamlit` · `Altair` · `pytest` · `Ruff` · `PowerShell`
+
+Projekti on toteutettu agenttiavusteisesti Claude Code -koodausagentilla. Vastasin
+arkkitehtuurista, vaiheiden määrittelystä ja laadunvarmistuksesta; agentti kirjoitti
+koodin. Työtapa on kuvattu kohdassa [Kehityksestä](#kehityksestä).
+
+> Oikeaa rahaa ei liiku missään vaiheessa. Projekti mittaa, toimiiko pisteytysmalli;
+> se ei käy kauppaa eikä ole sijoitusneuvontaa.
 
 ## Miten se toimii
+
+![Arkkitehtuurikaavio: ajastus tai käyttäjä käynnistää orkestroijan, joka ajaa neljä agenttia järjestyksessä. Agentit jakavat tiedon vain SQLite-kannan kautta, ja Streamlit-näkymä lukee kantaa.](docs/arkkitehtuuri.drawio.svg)
 
 Neljä agenttia ajetaan kiinteässä järjestyksessä. **Agentit eivät kutsu toisiaan** —
 jokainen lukee edellisen tuloksen tietokannasta ja kirjoittaa omansa sinne. SQLite on
@@ -161,8 +185,25 @@ jokaiseen ajoon:
 
 ## Kehityksestä
 
-Koodi on kirjoitettu Claude Codella. Oma osuuteni oli arkkitehtuuri, vaiheiden
-määrittely ja tulosten tarkistus: esimerkiksi kesken olevan pörssipäivän aiheuttama
-datavirhe, käteispainon salkun tuottolukua vääristävä vaikutus ja jäljettömiin
-katoavat ehdokkaat löytyivät ajojen tuloksia analysoimalla, ja johtivat kukin omaan
-korjausvaiheeseensa.
+Projekti on toteutettu agenttiavusteisella ohjelmistokehityksellä. Koodin kirjoitti
+Claude Code -koodausagentti, ja käytin Claudea myös suunnittelun ja tarkistusten tukena.
+Minun vastuullani olivat järjestelmän arkkitehtuuri, mallin säännöt, vaiheiden
+määrittely ja jokaisen muutoksen hyväksyminen.
+
+Tekoäly oli kehitystyökalu, ei osa järjestelmää: analysaattorin neljä agenttia ovat
+sääntöpohjaisia ohjelmamoduuleja, joiden jokainen päätös on jäljitettävissä.
+
+Työ eteni vaihe kerrallaan, ja git-historiassa on yli 30 vaihekohtaista committia:
+
+1. **Määrittely:** vaiheen tavoite, muutettavat tiedostot ja testitapaukset etukäteen.
+2. **Toteutus** koodausagentilla.
+3. **Laadunvarmistus:** testit ja Ruff läpi, ajo oikeaa rajapintaa vasten ja tulosten
+   vertailu odotettuun ennen committia.
+
+Vakavimmat virheet löytyivät oikeasta datasta, eivät testeistä:
+
+- kesken olevan pörssipäivän vääristämä data
+- käteisen osuuden vääristämä tuottoluku
+- jäljettömiin katoavat ehdokkaat.
+
+Jokainen johti omaan korjausvaiheeseensa.
