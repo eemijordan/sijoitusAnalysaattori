@@ -21,8 +21,8 @@ testattavan.
 | Agentti | Tehtävä |
 |---|---|
 | **1 · trendinmetsästäjä** | Hakee ehdokkaita Financial Modeling Prepistä: sisäpiirikaupat, analyytikkoarviot, hintatavoitteet ja kongressin jäsenten kaupat. Pisteyttää ja karsii. |
-| **2 · tekninen analyytikko** | Hakee kurssihistorian Twelve Datasta, laskee tunnusluvut (ATR, RSI, liukuvat keskiarvot) ja antaa risk/reward-pisteet 0–10 sekä stop-loss- ja tavoitehinnan. |
-| **3 · päätöksentekijä** | Tekee osto-, pito- ja myyntipäätökset kahdeksan ostoehdon ja viiden pito/myyntiehdon perusteella. Jokainen päätös tallennetaan perusteluineen. |
+| **2 · tekninen analyytikko** | Hakee kurssihistorian Twelve Datasta, laskee tunnusluvut (ATR, RSI, liukuvat keskiarvot, EMA20 ja EMA100) ja antaa risk/reward-pisteet 0–10 yhden desimaalin tarkkuudella. Asettaa stop-lossin edellisen pohjan alle. |
+| **3 · päätöksentekijä** | Tekee osto-, pito- ja myyntipäätökset. Ostaa riittävät pisteet saaneita osakkeita salkun rajoissa ja myy, kun stop-loss laukeaa tai nousutrendi päättyy (EMA20 laskee EMA100:n alle). Jokainen päätös tallennetaan perusteluineen. |
 | **4 · raportoija** | Laskee salkun tilannekuvan ja tuoton sekä kokonaisuutena että pelkkien positioiden osalta, ja vertaa sitä SPY:hyn. |
 
 Ajotyyppejä on kaksi: **normaaliajo** etsii uusia ehdokkaita ja voi avata positioita,
@@ -86,7 +86,9 @@ Tarkemmin: `scripts/README.md`.
 
 ### Milloin ajo onnistuu
 
-**Klo 07:00–16:30 Suomen aikaa, arkisin.**
+**Arkisin klo 07:00–16:30 Suomen aikaa, viikonloppuna lauantaiaamusta klo 7 alkaen.**
+Kesäaikasiirtymien välisinä viikkoina (maaliskuussa sekä loka–marraskuun vaihteessa)
+ikkuna on tuntia aiemmin.
 
 Analyysi perustuu päättyneisiin pörssipäiviin. Kesken olevan päivän kynttilän huippu,
 pohja ja päätöskurssi muuttuvat vielä, mikä vääristäisi esimerkiksi 52 viikon huipun.
@@ -101,12 +103,12 @@ sama päivä keskiyöhön asti.
 
 ```
 agents/       neljä agenttia, yksi tiedosto kukin
-core/         orkestroija, tietokanta, asetukset, pörssiaika, lokitus
-dashboard/    Streamlit-käyttöliittymä (lukee kantaa, ei kirjoita siihen)
+core/         orkestroija, tietokanta, asetukset, pörssiaika, lokitus, ajastus, ajolukko
+dashboard/    Streamlit-käyttöliittymä ja tuottograafi (lukee kantaa, ei kirjoita siihen)
 scripts/      käynnistimet (.ps1 ja .cmd)
 tests/        yksikkötestit
 tools/        api_koetin.py — rajapintojen käsin kokeiluun
-data/         tietokanta ja raakadata-arkisto (ei versionhallinnassa)
+data/         tietokanta ja ajojen arkisto (versionhallinnassa vain ajojen _ajo.json)
 ```
 
 Päätöslogiikka on erotettu puhtaiksi funktioiksi tiedon hausta, joten pisteytys ja
@@ -115,7 +117,7 @@ päätökset ovat testattavissa ilman verkkoa ja tietokantaa.
 ## Testit
 
 ```bash
-pytest                      # yli 250 testiä
+pytest                      # yli 400 testiä
 ruff check .
 ruff format --check .
 ```
@@ -134,8 +136,9 @@ jokaiseen ajoon:
 | Positioita enintään | 10 |
 | Ostoja per ajo enintään | 2 |
 | Ostoraja | risk/reward-pisteet ≥ 7 |
-| Stop-loss | 2 × ATR ostohinnasta |
-| Takaisinosto samaan symboliin | aikaisintaan 30 päivän kuluttua |
+| Stop-loss | edellisen pohjan alle (ensin viikko-, sitten päiväkaavio), enintään 20 % ostohinnasta |
+| Myynti | stop-loss tai nousutrendin päättyminen (EMA20 laskee EMA100:n alle) |
+| Takaisinosto samaan symboliin | 30 päivän jäähy, ellei nousutrendi ala myynnin jälkeen uudelleen |
 | Vertailuindeksi | SPY |
 
 ## Tunnetut rajoitukset
