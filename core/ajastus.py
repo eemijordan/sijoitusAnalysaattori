@@ -1,12 +1,13 @@
 """Ajastetun ajon päätös: ajetaanko nyt, ja mitkä ajotyypit (vaihe 6a).
 
 Windowsin Tehtävien ajoitus käynnistää tämän ti-la klo 10 Suomen aikaa
-(vaihe 6b), ja jos kone ei ollut silloin päällä, heti kun kone seuraavan
-kerran avataan. Tämä moduuli päättää, onko ajo vielä ajankohtainen:
+(vaihe 6b), jos kone ei ollut silloin päällä, heti kun kone seuraavan
+kerran avataan, ja 2 minuuttia kirjautumisen jälkeen (vaihe 6c). Tämä
+moduuli päättää, onko ajo vielä ajankohtainen:
 
 - vain ajopäivinä (tarkistus ti-la, normaaliajo ti ja pe)
 - ei ennen klo 10:tä: aiemman päivän väliin jäänyt ajo ei siirry seuraavalle
-  päivälle, vaan sen myöhästynyt käynnistys ohitetaan
+  päivälle, eikä aamun kirjautuminen aikaista päivän ajoa
 - ei New Yorkin pörssin avauduttua (porssiaika.is_data_ready)
 - sama ajotyyppi vain kerran päivässä (myös käsin ajettu lasketaan)
 - ei koskaan committaamattomalla agents/- tai core/-koodilla.
@@ -51,8 +52,8 @@ def decide_scheduled_run(
         return [], f"Tanaan ({weekday}) ei ole ajopaiva. Ajot ovat ti-la klo 10."
     if now_fi.time() < SCHEDULED_TIME:
         return [], (
-            "Kello ei ole viela 10. Tama on aiemmin valiin jaaneen ajon "
-            "myohastynyt kaynnistys, eika sita ajeta. Taman paivan ajo on klo 10."
+            "Kello ei ole viela 10, joten ajoa ei tehda nyt. "
+            "Taman paivan ajo tehdaan klo 10."
         )
     ready, reason = porssiaika.is_data_ready(now_fi.astimezone(NEW_YORK))
     if not ready:

@@ -81,7 +81,8 @@ Ajastettu ajo tekee tarkistuksen ti–la ja normaaliajon ti ja pe klo 10 Suomen 
 aina tarkistuksen ensin. Jos kone on silloin kiinni, ajo tehdään kun kone avataan, mutta
 vain jos New Yorkin pörssi ei ole vielä auennut. Väliin jäänyt ajo ei siirry seuraavalle
 päivälle. Kone ei koskaan herää ajoa varten, ajo tehdään vain kirjautuneena, ja ikkuna
-näkyy aina. Ajastettu ajo ei aja committaamatonta `agents/`- tai `core/`-koodia.
+näkyy aina. Ajo käynnistyy myös 2 minuuttia kirjautumisen jälkeen, jos se on vielä
+tekemättä; jos ajettavaa ei ole, ikkuna näyttää syyn ja sulkeutuu itse. Ajastettu ajo ei aja committaamatonta `agents/`- tai `core/`-koodia.
 Tarkemmin: `scripts/README.md`.
 
 ### Milloin ajo onnistuu

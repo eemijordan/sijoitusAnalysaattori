@@ -1,7 +1,9 @@
-# Ajastettu ajo (vaihe 6b). Windowsin Tehtavien ajoitus kaynnistaa taman ti-la
-# klo 10 ja, jos kone oli silloin kiinni, kun kone seuraavan kerran avataan.
-# Paatoksen siita, ajetaanko mitaan, tekee core/ajastus.py - tama skripti vain
-# nayttaa ikkunan, kirjoittaa lokin ja jattaa ikkunan auki Enteriin asti.
+# Ajastettu ajo (vaiheet 6b ja 6c). Windowsin Tehtavien ajoitus kaynnistaa
+# taman ti-la klo 10, myohastyneena kun kone avataan, ja 2 minuuttia
+# kirjautumisen jalkeen. Paatoksen siita, ajetaanko mitaan, tekee
+# core/ajastus.py - tama skripti vain nayttaa ikkunan ja kirjoittaa lokin.
+# Jos ajo tehtiin tai jokin epaonnistui, ikkuna odottaa Enteria. Jos ajettavaa
+# ei ollut, ikkuna nayttaa syyn ja sulkeutuu itse 15 sekunnin kuluttua.
 
 $Host.UI.RawUI.WindowTitle = "Sijoitusanalysaattori - ajastettu ajo"
 
@@ -28,15 +30,23 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LokiTiedosto) | O
 # katkaista ajoa vahingossa, joten se kasitellaan ajon ajan tavallisena
 # nappaimena. Ajon voi silti pysayttaa sulkemalla ikkunan.
 try { [Console]::TreatControlCAsInput = $true } catch { }
+# Tee-Object -Variable: rivit talteen, jotta alla voidaan paattaa, tehtiinko
+# ajo (core/ajastus.py tulostaa "Ajetaan: ..." vain kun se ajaa jotain).
 & $Python -u -m core.ajastus 2>&1 | ForEach-Object { "$_" } |
-    Tee-Object -FilePath $LokiTiedosto -Append
+    Tee-Object -FilePath $LokiTiedosto -Append | Tee-Object -Variable Rivit
 $Paluukoodi = $LASTEXITCODE
 try { [Console]::TreatControlCAsInput = $false } catch { }
 
 Write-Host ""
-Write-Host "Valmis (paluukoodi $Paluukoodi). Tulokset nakyvat myos nakymassa: scripts\nakyma.cmd"
-# Ajon aikana vahingossa painettu Enter ei saa sulkea ikkunaa ennen kuin
-# tuloksen ehtii nahda.
-try { $Host.UI.RawUI.FlushInputBuffer() } catch { }
-Read-Host "Paina Enter sulkeaksesi ikkunan" | Out-Null
+$Ajettiin = [bool]($Rivit -match '^Ajetaan:')
+if ($Paluukoodi -ne 0 -or $Ajettiin) {
+    Write-Host "Valmis (paluukoodi $Paluukoodi). Tulokset nakyvat myos nakymassa: scripts\nakyma.cmd"
+    # Ajon aikana vahingossa painettu Enter ei saa sulkea ikkunaa ennen kuin
+    # tuloksen ehtii nahda.
+    try { $Host.UI.RawUI.FlushInputBuffer() } catch { }
+    Read-Host "Paina Enter sulkeaksesi ikkunan" | Out-Null
+} else {
+    Write-Host "Ei ajettavaa juuri nyt. Ikkuna sulkeutuu 15 sekunnin kuluttua."
+    Start-Sleep -Seconds 15
+}
 exit $Paluukoodi

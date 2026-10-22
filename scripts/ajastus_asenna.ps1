@@ -27,6 +27,13 @@ $Ajastin = New-ScheduledTaskTrigger -Weekly -WeeksInterval 1 `
 # muotoilisi kellonajan pisteilla (10.00.00), jota Tehtavien ajoitus ei ymmarra.
 $Ajastin.StartBoundary = (Get-Date -Hour 10 -Minute 0 -Second 0).ToString(
     "yyyy-MM-ddTHH:mm:ss", [Globalization.CultureInfo]::InvariantCulture)
+# Kirjautumisen jalkeen (vaihe 6c). Jos kone kaynnistetaan vasta klo 10
+# jalkeen, Windows yrittaa myohastynytta ajoa jo ennen kirjautumista ja
+# luovuttaa, koska tehtava ajetaan vain kirjautuneena (ikkunan takia), eika
+# yrita uudelleen. Tama kaynnistin ajaa tehtavan 2 minuuttia kirjautumisen
+# jalkeen; core/ajastus.py paattaa edelleen, onko ajo ajankohtainen.
+$Kirjautuessa = New-ScheduledTaskTrigger -AtLogOn -User $Kayttaja
+$Kirjautuessa.Delay = "PT2M"
 
 # StartWhenAvailable: jos kone oli kiinni klo 10, ajo kaynnistyy kun kone
 # avataan. Akkuvirralla ajetaan, koska ajo tehdaan vain kun konetta kaytetaan.
@@ -43,7 +50,7 @@ $Kayttajana = New-ScheduledTaskPrincipal -UserId $Kayttaja `
     -LogonType Interactive -RunLevel Limited
 
 Register-ScheduledTask -TaskName $TehtavanNimi -Action $Toiminto `
-    -Trigger $Ajastin -Settings $Asetukset -Principal $Kayttajana `
+    -Trigger $Ajastin, $Kirjautuessa -Settings $Asetukset -Principal $Kayttajana `
     -Description "Sijoitusanalysaattorin ajastettu ajo (scripts\ajastettu.ps1)" `
     -Force | Out-Null
 
@@ -55,16 +62,25 @@ if ($Tehtava.Settings.WakeToRun) {
 }
 # Paikallinen klo 10 ilman Z:aa tai aikavyohykepoikkeamaa (+03:00) - kumpikin
 # sitoisi ajon kiinteaan UTC-aikaan.
-$Alku = $Tehtava.Triggers[0].StartBoundary
+$Viikko = $Tehtava.Triggers |
+    Where-Object { $_.CimClass.CimClassName -eq "MSFT_TaskWeeklyTrigger" }
+$Alku = $Viikko.StartBoundary
 if ($Alku -notlike "*T10:00:00") {
     Unregister-ScheduledTask -TaskName $TehtavanNimi -Confirm:$false
     throw "Ajastimen aika tallentui muodossa $Alku eika paikallisena klo 10 - asennus peruttiin."
+}
+$Kirjautumisessa = $Tehtava.Triggers |
+    Where-Object { $_.CimClass.CimClassName -eq "MSFT_TaskLogonTrigger" }
+if ($null -eq $Kirjautumisessa) {
+    Unregister-ScheduledTask -TaskName $TehtavanNimi -Confirm:$false
+    throw "Kirjautumiskaynnistin puuttuu tallennetusta tehtavasta - asennus peruttiin."
 }
 $Info = Get-ScheduledTaskInfo -TaskName $TehtavanNimi
 
 Write-Host "Ajastus asennettu: $TehtavanNimi"
 Write-Host "  Ajot: ti-la klo 10.00 (tarkistus; ti ja pe myos normaaliajo)"
 Write-Host "  Kone kiinni klo 10: ajo kun kone avataan, jos New Yorkin porssi ei ole auki"
+Write-Host "  Lisaksi 2 min kirjautumisen jalkeen, jos ajo on viela tekematta"
 Write-Host "  Herattaa koneen: ei"
 Write-Host "  Ajetaan vain kun olet kirjautuneena, ikkuna nakyy aina"
 Write-Host "  Seuraava ajo: $($Info.NextRunTime)"
