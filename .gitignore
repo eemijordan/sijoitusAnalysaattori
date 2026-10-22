@@ -11,3 +11,6 @@ data/arkisto/*/*
 *.bkp
 .pytest_cache/
 Claude outputs/
+
+# Claude Coden projektiohjeet: vain koneelle, ei versionhallintaan
+CLAUDE.md
