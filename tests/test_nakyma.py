@@ -51,6 +51,13 @@ def _lataa_funktiot(*nimet):
     _tuottosarja,
     _tuottokaavio,
     _tarkistus_vanhentunut,
+    _suomi_aika,
+    _kuukauden_nimi,
+    _kuukaudet,
+    _tapahtumataulukko,
+    _kuukauden_yhteenveto,
+    _kielto_ohitettu,
+    _pisteiden_tila,
 ) = _lataa_funktiot(
     "_tyhjat_viivoiksi",
     "_suomi_pvm",
@@ -58,6 +65,13 @@ def _lataa_funktiot(*nimet):
     "_tuottosarja",
     "_tuottokaavio",
     "_tarkistus_vanhentunut",
+    "_suomi_aika",
+    "_kuukauden_nimi",
+    "_kuukaudet",
+    "_tapahtumataulukko",
+    "_kuukauden_yhteenveto",
+    "_kielto_ohitettu",
+    "_pisteiden_tila",
 )
 
 
@@ -310,3 +324,245 @@ def test_tarkistus_vanhentunut_lauantaista_keskiviikkoon_varoitus():
 
 def test_tarkistus_vanhentunut_sama_paiva_ei_varoitusta():
     assert _tarkistus_vanhentunut("2026-10-06T10:00:05", date(2026, 10, 6)) is None
+
+
+# --- Vaihe 5e: tapahtumaloki ja "Parhaat pisteet nyt" ---
+
+
+@pytest.mark.parametrize(
+    ("aikaleima", "odotus"),
+    [
+        ("2026-11-03T15:39:25", "3.11.2026 klo 15.39"),
+        ("2026-09-07T08:05:00", "7.9.2026 klo 8.05"),
+        ("2026-10-31", "31.10.2026"),
+    ],
+)
+def test_suomi_aika(aikaleima, odotus):
+    assert _suomi_aika(aikaleima) == odotus
+
+
+@pytest.mark.parametrize(
+    ("kuukausi", "odotus"),
+    [
+        ("2026-11", "Marraskuu 2026"),
+        ("2027-01", "Tammikuu 2027"),
+        ("2026-07", "Heinäkuu 2026"),
+    ],
+)
+def test_kuukauden_nimi(kuukausi, odotus):
+    assert _kuukauden_nimi(kuukausi) == odotus
+
+
+def _tapahtuma(
+    aika,
+    symboli,
+    laji,
+    hinta,
+    maara,
+    summa,
+    tulos=None,
+    tulos_pct=None,
+    perustelu="peruste",
+):
+    return {
+        "time": aika,
+        "symbol": symboli,
+        "kind": laji,
+        "price": hinta,
+        "quantity": maara,
+        "amount_usd": summa,
+        "pnl_usd": tulos,
+        "pnl_pct": tulos_pct,
+        "rationale": perustelu,
+    }
+
+
+PG_OSTO = _tapahtuma("2026-11-06T12:44:21", "PG", "osto", 167.1, 5.984440, 1000.0)
+NVDA_MYYNTI = _tapahtuma(
+    "2026-10-31T11:25:45",
+    "NVDA",
+    "myynti",
+    204.64,
+    4.629630,
+    947.41,
+    tulos=-52.59,
+    tulos_pct=-5.259259,
+)
+APH_OSTO = _tapahtuma("2026-09-14T10:00:00", "APH", "osto", 83.92, 11.916110, 1000.0)
+
+
+def test_kuukaudet_ensimmaisesta_tahan_kuuhun_uusin_ensin():
+    kuukaudet = _kuukaudet([PG_OSTO, NVDA_MYYNTI, APH_OSTO], date(2026, 11, 11))
+
+    assert kuukaudet == ["2026-11", "2026-10", "2026-09"]
+
+
+def test_kuukaudet_ilman_tapahtumia_vain_kuluva_kuukausi():
+    assert _kuukaudet([], date(2026, 11, 11)) == ["2026-11"]
+
+
+def test_kuukaudet_kuluva_kuukausi_mukana_vaikka_tyhja():
+    assert _kuukaudet([APH_OSTO], date(2026, 11, 11)) == [
+        "2026-11",
+        "2026-10",
+        "2026-09",
+    ]
+
+
+def test_kuukaudet_vuodenvaihteen_yli():
+    joulukuu = _tapahtuma("2026-12-15T10:00:00", "KO", "osto", 87.0, 11.5, 1000.0)
+
+    assert _kuukaudet([joulukuu], date(2027, 2, 1)) == ["2027-02", "2027-01", "2026-12"]
+
+
+def test_tapahtumataulukko_rajaa_kuukauteen_ja_muotoilee_myynnin():
+    df = _tapahtumataulukko([PG_OSTO, NVDA_MYYNTI, APH_OSTO], "2026-10")
+
+    assert df.to_dict("records") == [
+        {
+            "Aika": "31.10.2026 klo 11.25",
+            "Symboli": "NVDA",
+            "Tapahtuma": "Myynti",
+            "Hinta (USD)": "204.64",
+            "Määrä": "4.6296",
+            "Summa (USD)": "947.41",
+            "Tulos (USD)": "-52.59",
+            "Tulos (%)": "-5.26 %",
+            "Perustelu": "peruste",
+        }
+    ]
+
+
+def test_tapahtumataulukko_ostolla_tulos_on_viiva():
+    df = _tapahtumataulukko([PG_OSTO, NVDA_MYYNTI], "2026-11")
+
+    assert list(df["Symboli"]) == ["PG"]
+    assert df.iloc[0]["Tapahtuma"] == "Osto"
+    assert df.iloc[0]["Tulos (USD)"] == "-"
+    assert df.iloc[0]["Tulos (%)"] == "-"
+    assert df.iloc[0]["Summa (USD)"] == "1000.00"
+
+
+def test_tapahtumataulukko_puuttuva_perustelu_viivaksi():
+    ilman = _tapahtuma(
+        "2026-11-03T15:39:25", "SIBN", "osto", 20.22, 49.456, 1000.0, perustelu=None
+    )
+
+    df = _tapahtumataulukko([ilman], "2026-11")
+
+    assert df.iloc[0]["Perustelu"] == "-"
+
+
+def test_tapahtumataulukko_tyhja_kuukausi_antaa_tyhjan_taulukon_samoilla_sarakkeilla():
+    tyhja = _tapahtumataulukko([PG_OSTO], "2026-08")
+    taysi = _tapahtumataulukko([PG_OSTO], "2026-11")
+
+    assert tyhja.empty
+    assert list(tyhja.columns) == list(taysi.columns)
+
+
+def test_tapahtumataulukko_sailyttaa_jarjestyksen():
+    myohempi = _tapahtuma("2026-11-06T12:44:21", "PG", "osto", 167.1, 5.98, 1000.0)
+    aiempi = _tapahtuma("2026-11-03T15:39:25", "SIBN", "osto", 20.22, 49.46, 1000.0)
+
+    df = _tapahtumataulukko([myohempi, aiempi], "2026-11")
+
+    assert list(df["Symboli"]) == ["PG", "SIBN"]
+
+
+def test_kuukauden_yhteenveto_monikko_ja_nolla_myyntia():
+    sibn = _tapahtuma("2026-11-03T15:39:25", "SIBN", "osto", 20.22, 49.46, 1000.0)
+
+    teksti = _kuukauden_yhteenveto([PG_OSTO, sibn, NVDA_MYYNTI], "2026-11")
+
+    assert teksti == "2 ostoa · 0 myyntiä · toteutunut tulos +0.00 USD"
+
+
+def test_kuukauden_yhteenveto_yksikko_ja_toteutunut_tulos():
+    nvda_osto = _tapahtuma("2026-10-27T13:14:38", "NVDA", "osto", 216.0, 4.63, 1000.0)
+
+    teksti = _kuukauden_yhteenveto([NVDA_MYYNTI, nvda_osto], "2026-10")
+
+    assert teksti == "1 osto · 1 myynti · toteutunut tulos -52.59 USD"
+
+
+KIELTO = {"until": "2026-11-30", "sold_on": "2026-10-31"}
+
+
+@pytest.mark.parametrize(
+    "pisteytys",
+    [
+        {"ema_fast": None, "ema_slow": None, "ema_cross_date": None},
+        {"ema_fast": 205.9, "ema_slow": 212.9, "ema_cross_date": "2026-11-04"},
+        {"ema_fast": 220.0, "ema_slow": 215.0, "ema_cross_date": None},
+        {"ema_fast": 220.0, "ema_slow": 215.0, "ema_cross_date": "2026-04-14"},
+        {"ema_fast": 220.0, "ema_slow": 215.0, "ema_cross_date": "2026-10-31"},
+        {"ema_fast": 220.0, "ema_slow": 215.0, "ema_cross_date": "2026-11-12"},
+        {"ema_fast": 215.0, "ema_slow": 215.0, "ema_cross_date": "2026-11-12"},
+    ],
+)
+def test_kielto_ohitettu_vastaa_agentti3_saantoa(pisteytys):
+    # Tuonti testin sisalla: agents-paketin tuonti alustaa lokituksen, ja
+    # conftestin fixturet ohjaavat sen tmp_path:iin vasta testin aikana.
+    from agents import paatoksentekija
+
+    odotus, _ = paatoksentekija._check_cooldown_bypass(pisteytys, KIELTO)
+
+    assert _kielto_ohitettu(pisteytys, KIELTO) is odotus
+
+
+def _tila(
+    symboli="CHCO",
+    pisteet=8.4,
+    kielto=None,
+    ohitettu=False,
+    *,
+    omistetut=frozenset(),
+    taynna=False,
+    kateista=True,
+):
+    return _pisteiden_tila(
+        symboli,
+        pisteet,
+        kielto,
+        ohitettu,
+        omistetut=set(omistetut),
+        ostoraja=7,
+        salkku_taynna=taynna,
+        kateinen_riittaa=kateista,
+    )
+
+
+def test_pisteiden_tila_omistus_menee_kaiken_edelle():
+    assert _tila("FITB", 8.8, KIELTO, omistetut={"FITB"}, kateista=False) == (
+        "Omistuksessa"
+    )
+
+
+def test_pisteiden_tila_kielto_paattymispaivineen():
+    assert _tila("NVDA", 9.1, KIELTO) == "Kielto 30.11.2026 asti"
+
+
+def test_pisteiden_tila_ohitettu_kielto_ei_esta():
+    assert _tila("NVDA", 8.0, KIELTO, ohitettu=True) == "Ostokelpoinen, kielto ohitettu"
+
+
+def test_pisteiden_tila_ohitettu_kielto_ei_ohita_ostorajaa():
+    assert _tila("NVDA", 6.0, KIELTO, ohitettu=True) == "Alle ostorajan"
+
+
+def test_pisteiden_tila_alle_ostorajan():
+    assert _tila(pisteet=6.9) == "Alle ostorajan"
+
+
+def test_pisteiden_tila_ostoraja_sisaltyy():
+    assert _tila(pisteet=7.0) == "Ostokelpoinen"
+
+
+def test_pisteiden_tila_kateinen_ei_riita():
+    # 11.11.2026: CHCO 8,4 hylattiin, koska kateista oli 216,81 USD.
+    assert _tila(kateista=False) == "Käteinen ei riitä"
+
+
+def test_pisteiden_tila_salkku_taynna_ennen_kateista():
+    assert _tila(taynna=True, kateista=False) == "Salkku täynnä"

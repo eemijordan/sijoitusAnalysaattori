@@ -129,7 +129,7 @@ sama päivä keskiyöhön asti.
 ```
 agents/       neljä agenttia, yksi tiedosto kukin
 core/         orkestroija, tietokanta, asetukset, pörssiaika, lokitus, ajastus, ajolukko
-dashboard/    Streamlit-käyttöliittymä ja tuottograafi (lukee kantaa, ei kirjoita siihen)
+dashboard/    Streamlit-käyttöliittymä, tuottograafi ja tapahtumaloki (lukee kantaa, ei kirjoita siihen)
 scripts/      käynnistimet (.ps1 ja .cmd)
 tests/        yksikkötestit
 tools/        api_koetin.py — rajapintojen käsin kokeiluun

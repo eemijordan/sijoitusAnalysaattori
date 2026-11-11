@@ -1,8 +1,8 @@
-"""Streamlit-nakyma: kaksi ajonappia, salkun tuotto ja valitun ajon tulokset.
+"""Streamlit-nakyma: ajonapit, salkun tuotto, ajon tulokset ja tapahtumat.
 
-Asettelu on kolmessa osassa: ylarivi (Hallinta, Parhaat pisteet,
-Omistukset), salkun tuotto SPY:hyn verrattuna (vaihe 5d) ja valitun ajon
-tulokset (Agentit 1-3).
+Asettelu on neljassa osassa: ylarivi (Hallinta, Parhaat pisteet nyt,
+Omistukset), salkun tuotto SPY:hyn verrattuna (vaihe 5d), valitun ajon
+tulokset (Agentit 1-3) ja kuukauden osto- ja myyntitapahtumat (vaihe 5e).
 
 Nakyma on pelkka lukija - se kayttaa vain core/tietokanta.py:n get_*-funktioita.
 Ainoa kirjoittaja on aliprosessina ajettava core.orkestroija (ks. _aja_orkestroija).
@@ -28,7 +28,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from core import porssiaika, tietokanta  # noqa: E402
-from core.asetukset import BENCHMARK_SYMBOL  # noqa: E402
+from core.asetukset import (  # noqa: E402
+    BENCHMARK_SYMBOL,
+    MAX_POSITIONS,
+    POSITION_SIZE,
+    REPURCHASE_COOLDOWN_DAYS,
+    RR_THRESHOLD,
+)
 
 st.set_page_config(page_title="Sijoitusanalysaattori", layout="wide")
 st.title("Sijoitusanalysaattori")
@@ -36,6 +42,13 @@ st.title("Sijoitusanalysaattori")
 # Pisteytys on jatkuva 0,1 tarkkuudella (vaihe 2k) - ilman muotoilua 7,3
 # voisi nakya vaarin.
 _RR_PISTEET_SARAKE = {"RR-pisteet": st.column_config.NumberColumn(format="%.1f")}
+
+# Tapahtumaloki muotoilee luvut tekstiksi (vaihe 5e, ks. _tapahtumataulukko),
+# joten oikea tasaus annetaan erikseen - tekstisarake tasautuisi vasemmalle.
+_TAPAHTUMIEN_LUKUSARAKKEET = {
+    sarake: st.column_config.TextColumn(alignment="right")
+    for sarake in ("Hinta (USD)", "Määrä", "Summa (USD)", "Tulos (USD)", "Tulos (%)")
+}
 
 
 def _turvallinen_haku(funktio, *args, **kwargs):
@@ -108,6 +121,163 @@ def _tarkistus_vanhentunut(viimeisin_alku: str | None, tanaan: date) -> str | No
         f"Edellisestä onnistuneesta tarkistuksesta on {paivia} päivää. "
         "Myyntisääntöjä (stop ja EMA) ei ole tarkistettu sen jälkeen."
     )
+
+
+def _suomi_aika(aikaleima: str) -> str:
+    """Muuntaa ISO-aikaleiman muotoon 3.11.2026 klo 15.39 (vaihe 5e).
+
+    Pelkkä päivämäärä (ilman T-osaa) muotoillaan ilman kellonaikaa.
+    """
+    if "T" not in aikaleima:
+        return _suomi_pvm(aikaleima[:10])
+    paiva, kello = aikaleima.split("T", 1)
+    tunnit, minuutit = kello.split(":")[:2]
+    return f"{_suomi_pvm(paiva)} klo {int(tunnit)}.{minuutit}"
+
+
+def _kuukauden_nimi(kuukausi: str) -> str:
+    """Muuntaa kuukausiavaimen (2026-11) muotoon Marraskuu 2026 (vaihe 5e)."""
+    nimet = (
+        "Tammikuu",
+        "Helmikuu",
+        "Maaliskuu",
+        "Huhtikuu",
+        "Toukokuu",
+        "Kesäkuu",
+        "Heinäkuu",
+        "Elokuu",
+        "Syyskuu",
+        "Lokakuu",
+        "Marraskuu",
+        "Joulukuu",
+    )
+    vuosi, kk = kuukausi.split("-")
+    return f"{nimet[int(kk) - 1]} {vuosi}"
+
+
+def _kuukaudet(tapahtumat: list[dict], tanaan: date) -> list[str]:
+    """Palauttaa kuukaudet ensimmäisestä tapahtumasta tähän kuuhun, uusin ensin.
+
+    Kuluva kuukausi on aina mukana, vaikka siinä ei olisi tapahtumia: valinta
+    alkaa siitä, ja tyhjä kuukausi näkyy tyhjänä eikä katoa listasta
+    (vaihe 5e).
+    """
+    vuosi, kk = tanaan.year, tanaan.month
+    alku = min(
+        (tapahtuma["time"][:7] for tapahtuma in tapahtumat),
+        default=f"{vuosi:04d}-{kk:02d}",
+    )
+    kuukaudet = []
+    while True:
+        avain = f"{vuosi:04d}-{kk:02d}"
+        kuukaudet.append(avain)
+        if avain <= alku:
+            return kuukaudet
+        kk -= 1
+        if kk == 0:
+            vuosi, kk = vuosi - 1, 12
+
+
+def _tapahtumataulukko(tapahtumat: list[dict], kuukausi: str) -> pd.DataFrame:
+    """Rajaa tapahtumat kuukauteen ja muotoilee ne näytettäväksi (vaihe 5e).
+
+    Luvut muotoillaan tekstiksi kiinteillä desimaaleilla, koska ostorivin
+    tulos on viiva, eikä viiva ja luku samassa sarakkeessa salli
+    numeromuotoilua. Järjestys säilyy sellaisenaan (uusin ensin).
+    """
+    sarakkeet = [
+        "Aika",
+        "Symboli",
+        "Tapahtuma",
+        "Hinta (USD)",
+        "Määrä",
+        "Summa (USD)",
+        "Tulos (USD)",
+        "Tulos (%)",
+        "Perustelu",
+    ]
+    rivit = []
+    for tapahtuma in tapahtumat:
+        if not tapahtuma["time"].startswith(kuukausi):
+            continue
+        tulos_usd = tapahtuma["pnl_usd"]
+        rivit.append(
+            {
+                "Aika": _suomi_aika(tapahtuma["time"]),
+                "Symboli": tapahtuma["symbol"],
+                "Tapahtuma": "Myynti" if tapahtuma["kind"] == "myynti" else "Osto",
+                "Hinta (USD)": f"{tapahtuma['price']:.2f}",
+                "Määrä": f"{tapahtuma['quantity']:.4f}",
+                "Summa (USD)": f"{tapahtuma['amount_usd']:.2f}",
+                "Tulos (USD)": "-" if tulos_usd is None else f"{tulos_usd:+.2f}",
+                "Tulos (%)": _muotoile_tuotto(tapahtuma["pnl_pct"]),
+                "Perustelu": tapahtuma["rationale"] or "-",
+            }
+        )
+    return pd.DataFrame(rivit, columns=sarakkeet)
+
+
+def _kuukauden_yhteenveto(tapahtumat: list[dict], kuukausi: str) -> str:
+    """Kokoaa kuukauden ostot, myynnit ja toteutuneen tuloksen riville (vaihe 5e)."""
+    kuun = [t for t in tapahtumat if t["time"].startswith(kuukausi)]
+    ostoja = sum(1 for t in kuun if t["kind"] == "osto")
+    myynnit = [t for t in kuun if t["kind"] == "myynti"]
+    tulos = sum(t["pnl_usd"] or 0.0 for t in myynnit)
+    return (
+        f"{ostoja} {'osto' if ostoja == 1 else 'ostoa'} · "
+        f"{len(myynnit)} {'myynti' if len(myynnit) == 1 else 'myyntiä'} · "
+        f"toteutunut tulos {tulos:+.2f} USD"
+    )
+
+
+def _kielto_ohitettu(pisteytys: dict, kielto: dict) -> bool:
+    """Kertoo, ohittaako nousutrendin paluu takaisinostokiellon (vaihe 5e).
+
+    Sama sääntö kuin Agentti 3:n _check_cooldown_bypass():ssa (vaihe 3e):
+    EMA20 on nyt EMA100:n yläpuolella ja viimeisin risteys on myyntipäivänä
+    tai sen jälkeen. Näkymä ei tuo agents-pakettia, koska tuonti alustaisi
+    lokituksen (loki.get_logger moduulitasolla) dashboard-prosessiin. Testi
+    test_kielto_ohitettu_vastaa_agentti3_saantoa pitää säännöt samoina.
+    """
+    nopea = pisteytys.get("ema_fast")
+    hidas = pisteytys.get("ema_slow")
+    risteys = pisteytys.get("ema_cross_date")
+    if nopea is None or hidas is None or risteys is None:
+        return False
+    return nopea >= hidas and risteys >= kielto["sold_on"]
+
+
+def _pisteiden_tila(
+    symboli: str,
+    pisteet: float,
+    kielto: dict | None,
+    kielto_ohitettu: bool,
+    *,
+    omistetut: set[str],
+    ostoraja: float,
+    salkku_taynna: bool,
+    kateinen_riittaa: bool,
+) -> str:
+    """Kertoo lyhyesti, voiko osakkeen ostaa nyt ja jos ei, miksi (vaihe 5e).
+
+    Tarkistukset ovat samassa järjestyksessä kuin Agentti 3:lla: omistus ja
+    kielto, sitten ostoraja, sitten salkun tila. Lopullinen päätös tehdään
+    vasta normaaliajossa, jossa tarkistetaan lisäksi mm. viitehintaraja ja
+    kahden oston raja ajoa kohden.
+    """
+    if symboli in omistetut:
+        return "Omistuksessa"
+    if kielto is not None and not kielto_ohitettu:
+        return f"Kielto {_suomi_pvm(kielto['until'])} asti"
+    if pisteet < ostoraja:
+        return "Alle ostorajan"
+    if salkku_taynna:
+        return "Salkku täynnä"
+    if not kateinen_riittaa:
+        return "Käteinen ei riitä"
+    if kielto is not None:
+        return "Ostokelpoinen, kielto ohitettu"
+    return "Ostokelpoinen"
 
 
 def _tuottosarja(tilannekuvat: list[dict]) -> pd.DataFrame:
@@ -323,23 +493,43 @@ with ylarivi[0], st.container(border=True):
     tila_paikka = st.empty()
 
 with ylarivi[1], st.container(border=True):
-    st.subheader("Parhaat pisteet")
-    parhaat, virhe = _turvallinen_haku(tietokanta.get_best_scores, days=30, limit=10)
+    st.subheader("Parhaat pisteet nyt")
+    parhaat, virhe = _turvallinen_haku(tietokanta.get_latest_scores, days=30, limit=10)
     if virhe:
         st.info(virhe)
     elif not parhaat:
         st.caption("Ei pisteytyksiä viimeisen 30 päivän ajalta.")
     else:
-        df = pd.DataFrame(parhaat)[["symbol", "risk_reward_score", "created_at"]]
-        df["omistus"] = df["symbol"].apply(
-            lambda s: "Kyllä" if s in omistetut_symbolit else "Ei"
+        kiellot, virhe_kiellot = _turvallinen_haku(
+            tietokanta.get_cooldown_symbols, REPURCHASE_COOLDOWN_DAYS, date.today()
         )
+        kateinen_nyt, virhe_kateinen_nyt = _turvallinen_haku(tietokanta.get_cash)
+        df = pd.DataFrame(parhaat)[["symbol", "risk_reward_score", "created_at"]]
+        if virhe_kiellot or virhe_kateinen_nyt:
+            # Tila jaa viivaksi: arvaus olisi pahempi kuin tyhja sarake.
+            df["tila"] = None
+        else:
+            df["tila"] = [
+                _pisteiden_tila(
+                    rivi["symbol"],
+                    rivi["risk_reward_score"],
+                    kiellot.get(rivi["symbol"]),
+                    rivi["symbol"] in kiellot
+                    and _kielto_ohitettu(rivi, kiellot[rivi["symbol"]]),
+                    omistetut=omistetut_symbolit,
+                    ostoraja=RR_THRESHOLD,
+                    salkku_taynna=len(omistetut_symbolit) >= MAX_POSITIONS,
+                    kateinen_riittaa=kateinen_nyt >= POSITION_SIZE,
+                )
+                for rivi in parhaat
+            ]
+        df["created_at"] = df["created_at"].apply(_suomi_aika)
         df = df.rename(
             columns={
                 "symbol": "Symboli",
                 "risk_reward_score": "RR-pisteet",
                 "created_at": "Pisteytetty",
-                "omistus": "Omistus",
+                "tila": "Tila",
             }
         )
         st.dataframe(
@@ -347,6 +537,17 @@ with ylarivi[1], st.container(border=True):
             hide_index=True,
             width="stretch",
             column_config=_RR_PISTEET_SARAKE,
+        )
+        positiokoko = f"{POSITION_SIZE:,}".replace(",", " ")
+        kateisteksti = (
+            ""
+            if kateinen_nyt is None
+            else " (nyt " + f"{kateinen_nyt:,.2f}".replace(",", " ") + " USD)"
+        )
+        st.caption(
+            "Jokaisen osakkeen viimeisin pisteytys 30 päivän ajalta. Ostoraja on "
+            f"{RR_THRESHOLD:g} pistettä, ja osto vaatii {positiokoko} USD "
+            f"käteistä{kateisteksti}. Lopullinen päätös tehdään normaaliajossa."
         )
 
 with ylarivi[2], st.container(border=True):
@@ -584,6 +785,32 @@ else:
                 f"Viimeisin tilannekuva ({viimeisin['snapshot_date']}): "
                 f"salkku {viimeisin['total_value']:,.2f} USD".replace(",", " ")
             )
+
+st.divider()
+st.subheader("Tapahtumat")
+
+tapahtumat, virhe_tapahtumat = _turvallinen_haku(tietokanta.get_transactions)
+if virhe_tapahtumat:
+    st.info(virhe_tapahtumat)
+else:
+    tapahtumat = tapahtumat or []
+    valittu_kuukausi = st.columns([1, 3])[0].selectbox(
+        "Kuukausi",
+        options=_kuukaudet(tapahtumat, date.today()),
+        format_func=_kuukauden_nimi,
+        key="tapahtumat_kuukausi",
+    )
+    taulukko = _tapahtumataulukko(tapahtumat, valittu_kuukausi)
+    if taulukko.empty:
+        st.caption("Ei osto- tai myyntitapahtumia tässä kuussa.")
+    else:
+        st.caption(_kuukauden_yhteenveto(tapahtumat, valittu_kuukausi))
+        st.dataframe(
+            taulukko,
+            hide_index=True,
+            width="stretch",
+            column_config=_TAPAHTUMIEN_LUKUSARAKKEET,
+        )
 
 if klik_tarkistus or klik_normaali:
     ajotyyppi = "tarkistus" if klik_tarkistus else "normaali"

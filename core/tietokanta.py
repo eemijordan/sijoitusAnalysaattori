@@ -873,17 +873,19 @@ def get_last_completed_run(run_type: str, db_path=DEFAULT_DB_PATH) -> dict | Non
         connection.close()
 
 
-def get_best_scores(
+def get_latest_scores(
     days: int = 30, limit: int = 10, db_path=DEFAULT_DB_PATH
 ) -> list[dict]:
-    """Palauttaa parhaiten pisteytetyt symbolit annetulta ajanjaksolta.
+    """Palauttaa symbolien viimeisimmät pisteytykset, parhaat ensin (vaihe 5e).
 
-    Yksi rivi per symboli: sen paras risk_reward_score viimeisen `days`
-    vuorokauden ajalta ja se pisteytysrivi (mm. created_at) joka sen antoi.
-    Jarjestys pisteiden mukaan laskevasti, enintaan `limit` riviä. Kaytetaan
-    dashboard/nakyma.py:ssa - pisteytyksen paivamaara kulkee mukana, koska
-    ilman sita vanha pistemaara nayttaisi valheellisesti "talla hetkella
-    parhaalta".
+    Yksi rivi per symboli: sen uusin technical_scores-rivi viimeisen `days`
+    vuorokauden ajalta. Järjestys pisteiden mukaan laskevasti, tasapisteissä
+    uudempi ensin, enintään `limit` riviä. Käytetään dashboard/nakyma.py:ssa.
+
+    Korvaa get_best_scores():n, joka näytti symbolin parhaan pisteen koko
+    ikkunalta. Vanha huippu näytti ostokelpoiselta, vaikka osake oli jo
+    myyty ja pisteet romahtaneet: 11.11.2026 taulukossa näkyivät NVDA 9,1 ja
+    GOOGL 9,2 13.10:ltä, vaikka nykyiset pisteet olivat 2,4 ja 1,4.
     """
     cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
     connection = open_connection(db_path)
@@ -892,20 +894,67 @@ def get_best_scores(
             """
             SELECT * FROM technical_scores
             WHERE created_at >= ?
-            ORDER BY risk_reward_score DESC, created_at DESC
+            ORDER BY created_at DESC, id DESC
             """,
             (cutoff,),
         ).fetchall()
     finally:
         connection.close()
 
-    best_by_symbol: dict[str, dict] = {}
+    latest_by_symbol: dict[str, dict] = {}
     for row in rows:
-        symbol = row["symbol"]
-        if symbol not in best_by_symbol:
-            best_by_symbol[symbol] = dict(row)
+        latest_by_symbol.setdefault(row["symbol"], dict(row))
 
-    return list(best_by_symbol.values())[:limit]
+    ranked = sorted(
+        latest_by_symbol.values(),
+        key=lambda row: (row["risk_reward_score"], row["created_at"], row["id"]),
+        reverse=True,
+    )
+    return ranked[:limit]
+
+
+def get_transactions(db_path=DEFAULT_DB_PATH) -> list[dict]:
+    """Palauttaa kaikki osto- ja myyntitapahtumat, uusin ensin (vaihe 5e).
+
+    Jokaisesta positiosta syntyy ostorivi ja suljetusta lisäksi myyntirivi.
+    Avaimet: time, symbol, kind ("osto" tai "myynti"), price, quantity,
+    amount_usd, pnl_usd, pnl_pct ja rationale. amount_usd on ostossa panos ja
+    myynnissä myyntitulo quantity * sell_price, sama laskutapa kuin
+    close_position():ssa. Ostorivillä pnl_usd ja pnl_pct ovat None.
+
+    Perustelu luetaan decisions-taulusta saman ajon ja symbolin osta- tai
+    myy-päätöksestä. Päätöstä ei liitetä JOINilla: puuttuva päätösrivi antaa
+    perusteluksi None eikä pudota tapahtumaa pois. Saman sekunnin tapahtumat
+    järjestetään lajin (myynti ennen ostoa) ja symbolin mukaan, jotta
+    järjestys on toistettava.
+    """
+    connection = open_connection(db_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT p.buy_date AS time, p.symbol, 'osto' AS kind,
+                   p.buy_price AS price, p.quantity, p.stake_usd AS amount_usd,
+                   NULL AS pnl_usd, NULL AS pnl_pct,
+                   (SELECT d.rationale FROM decisions d
+                    WHERE d.run_id = p.buy_run_id AND d.symbol = p.symbol
+                      AND d.decision = 'osta'
+                    ORDER BY d.id DESC LIMIT 1) AS rationale
+            FROM positions p
+            UNION ALL
+            SELECT p.sell_date, p.symbol, 'myynti', p.sell_price, p.quantity,
+                   p.quantity * p.sell_price, p.pnl_usd, p.pnl_pct,
+                   (SELECT d.rationale FROM decisions d
+                    WHERE d.run_id = p.sell_run_id AND d.symbol = p.symbol
+                      AND d.decision = 'myy'
+                    ORDER BY d.id DESC LIMIT 1)
+            FROM positions p
+            WHERE p.status = 'suljettu'
+            ORDER BY time DESC, kind ASC, symbol ASC
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    return [dict(row) for row in rows]
 
 
 def run_exists(run_id: str, db_path=DEFAULT_DB_PATH) -> bool:

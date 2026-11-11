@@ -1078,7 +1078,7 @@ def test_viimeisin_pisteytys_puuttuva_symboli_palauttaa_nonen(db_polku):
     assert tietokanta.get_latest_score_for_symbol("AAPL", db_path=db_polku) is None
 
 
-# --- get_recent_runs() ja get_best_scores(): vaihe 5 (dashboard) ---
+# --- get_recent_runs() ja get_latest_scores(): vaiheet 5 ja 5e (dashboard) ---
 
 
 def _kaynnista_ja_paata_ajo(db_polku, run_id):
@@ -1118,75 +1118,81 @@ def test_viimeisimmat_ajot_tyhja_kanta_palauttaa_tyhjan_listan(db_polku):
     assert tietokanta.get_recent_runs(db_path=db_polku) == []
 
 
-def test_parhaat_pisteet_yksi_rivi_per_symboli_paras_voittaa(db_polku):
-    tietokanta.init_database(db_polku)
-    for pisteet in (5.0, 9.0, 7.0):
-        tietokanta.insert_score(
-            run_id="ajo1",
-            run_type="normaali",
-            symbol="AAPL",
-            risk_reward_score=pisteet,
-            price=100.0,
-            db_path=db_polku,
-        )
-
-    parhaat = tietokanta.get_best_scores(db_path=db_polku)
-
-    assert len(parhaat) == 1
-    assert parhaat[0]["symbol"] == "AAPL"
-    assert parhaat[0]["risk_reward_score"] == 9.0
-
-
-def test_parhaat_pisteet_jattaa_pois_ikkunaa_vanhemmat(db_polku):
-    tietokanta.init_database(db_polku)
+def _lisaa_pisteytys(db_polku, symboli, pisteet, paivia_sitten):
+    """Lisää pisteytyksen kiinteällä aikaleimalla (insert_score käyttää kelloa)."""
+    aika = datetime.now() - timedelta(days=paivia_sitten)
     yhteys = tietokanta.open_connection(db_polku)
     try:
-        vanha = (datetime.now() - timedelta(days=40)).isoformat(timespec="seconds")
         yhteys.execute(
             """
             INSERT INTO technical_scores (
                 run_id, run_type, symbol, risk_reward_score, price, created_at
-            ) VALUES ('vanha_ajo', 'normaali', 'OLD', 9.0, 100.0, ?)
+            ) VALUES ('ajo', 'normaali', ?, ?, 100.0, ?)
             """,
-            (vanha,),
+            (symboli, pisteet, aika.isoformat(timespec="seconds")),
         )
         yhteys.commit()
     finally:
         yhteys.close()
-    tietokanta.insert_score(
-        run_id="ajo1",
-        run_type="normaali",
-        symbol="NEW",
-        risk_reward_score=5.0,
-        price=50.0,
-        db_path=db_polku,
-    )
-
-    parhaat = tietokanta.get_best_scores(days=30, db_path=db_polku)
-
-    symbolit = {p["symbol"] for p in parhaat}
-    assert "OLD" not in symbolit
-    assert "NEW" in symbolit
 
 
-def test_parhaat_pisteet_rajaa_ja_jarjestaa(db_polku):
+def test_viimeisimmat_pisteet_uusin_rivi_voittaa_vaikka_vanha_olisi_parempi(db_polku):
+    tietokanta.init_database(db_polku)
+    _lisaa_pisteytys(db_polku, "AAPL", 9.0, paivia_sitten=5)
+    _lisaa_pisteytys(db_polku, "AAPL", 5.0, paivia_sitten=1)
+
+    pisteet = tietokanta.get_latest_scores(db_path=db_polku)
+
+    assert [(p["symbol"], p["risk_reward_score"]) for p in pisteet] == [("AAPL", 5.0)]
+
+
+def test_viimeisimmat_pisteet_vanha_huippu_ei_nosta_symbolia(db_polku):
+    # 11.11.2026: NVDA:n 13.10. huippu 9,1 näkyi taulukon kärjessä, vaikka
+    # osake oli myyty ja nykyiset pisteet olivat 2,4.
+    tietokanta.init_database(db_polku)
+    _lisaa_pisteytys(db_polku, "NVDA", 9.1, paivia_sitten=29)
+    _lisaa_pisteytys(db_polku, "NVDA", 2.4, paivia_sitten=1)
+    _lisaa_pisteytys(db_polku, "KO", 7.8, paivia_sitten=1)
+
+    pisteet = tietokanta.get_latest_scores(db_path=db_polku)
+
+    assert [(p["symbol"], p["risk_reward_score"]) for p in pisteet] == [
+        ("KO", 7.8),
+        ("NVDA", 2.4),
+    ]
+
+
+def test_viimeisimmat_pisteet_jattaa_pois_ikkunaa_vanhemmat(db_polku):
+    tietokanta.init_database(db_polku)
+    _lisaa_pisteytys(db_polku, "OLD", 9.0, paivia_sitten=40)
+    _lisaa_pisteytys(db_polku, "NEW", 5.0, paivia_sitten=1)
+
+    pisteet = tietokanta.get_latest_scores(days=30, db_path=db_polku)
+
+    assert {p["symbol"] for p in pisteet} == {"NEW"}
+
+
+def test_viimeisimmat_pisteet_rajaa_ja_jarjestaa(db_polku):
     tietokanta.init_database(db_polku)
     for symboli, pisteet in (("A", 5.0), ("B", 9.0), ("C", 7.0), ("D", 3.0)):
-        tietokanta.insert_score(
-            run_id="ajo1",
-            run_type="normaali",
-            symbol=symboli,
-            risk_reward_score=pisteet,
-            price=100.0,
-            db_path=db_polku,
-        )
+        _lisaa_pisteytys(db_polku, symboli, pisteet, paivia_sitten=1)
 
-    parhaat = tietokanta.get_best_scores(limit=3, db_path=db_polku)
+    pisteet = tietokanta.get_latest_scores(limit=3, db_path=db_polku)
 
-    assert [p["symbol"] for p in parhaat] == ["B", "C", "A"]
+    assert [p["symbol"] for p in pisteet] == ["B", "C", "A"]
 
 
-def test_parhaat_pisteet_sisaltaa_pisteytyksen_paivamaaran(db_polku):
+def test_viimeisimmat_pisteet_tasapisteissa_uudempi_ensin(db_polku):
+    tietokanta.init_database(db_polku)
+    _lisaa_pisteytys(db_polku, "VANHA", 7.8, paivia_sitten=5)
+    _lisaa_pisteytys(db_polku, "UUSI", 7.8, paivia_sitten=1)
+
+    pisteet = tietokanta.get_latest_scores(db_path=db_polku)
+
+    assert [p["symbol"] for p in pisteet] == ["UUSI", "VANHA"]
+
+
+def test_viimeisimmat_pisteet_sisaltaa_pisteytyksen_ajan(db_polku):
     tietokanta.init_database(db_polku)
     tietokanta.insert_score(
         run_id="ajo1",
@@ -1197,15 +1203,146 @@ def test_parhaat_pisteet_sisaltaa_pisteytyksen_paivamaaran(db_polku):
         db_path=db_polku,
     )
 
-    parhaat = tietokanta.get_best_scores(db_path=db_polku)
+    pisteet = tietokanta.get_latest_scores(db_path=db_polku)
 
-    assert parhaat[0]["created_at"] is not None
+    assert pisteet[0]["created_at"] is not None
 
 
-def test_parhaat_pisteet_tyhja_kanta_palauttaa_tyhjan_listan(db_polku):
+def test_viimeisimmat_pisteet_tyhja_kanta_palauttaa_tyhjan_listan(db_polku):
     tietokanta.init_database(db_polku)
 
-    assert tietokanta.get_best_scores(db_path=db_polku) == []
+    assert tietokanta.get_latest_scores(db_path=db_polku) == []
+
+
+# --- get_transactions(): vaihe 5e (tapahtumaloki) ---
+
+
+def test_tapahtumat_tyhja_kanta_palauttaa_tyhjan_listan(db_polku):
+    tietokanta.init_database(db_polku)
+
+    assert tietokanta.get_transactions(db_path=db_polku) == []
+
+
+def test_tapahtumat_avoin_positio_antaa_vain_oston(db_polku):
+    tietokanta.init_database(db_polku)
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="osto1",
+        db_path=db_polku,
+    )
+
+    tapahtumat = tietokanta.get_transactions(db_path=db_polku)
+
+    assert len(tapahtumat) == 1
+    osto = tapahtumat[0]
+    assert osto["kind"] == "osto"
+    assert osto["symbol"] == "AAPL"
+    assert osto["price"] == 100.0
+    assert osto["quantity"] == pytest.approx(10.0)
+    assert osto["amount_usd"] == 1000.0
+    assert osto["pnl_usd"] is None
+    assert osto["pnl_pct"] is None
+    assert osto["time"] is not None
+
+
+def test_tapahtumat_suljettu_positio_antaa_myynnin_ja_oston_uusin_ensin(db_polku):
+    tietokanta.init_database(db_polku)
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="osto1",
+        db_path=db_polku,
+    )
+    tietokanta.close_position(
+        symbol="AAPL", sell_price=90.0, sell_run_id="myynti1", db_path=db_polku
+    )
+
+    tapahtumat = tietokanta.get_transactions(db_path=db_polku)
+
+    assert [t["kind"] for t in tapahtumat] == ["myynti", "osto"]
+    myynti = tapahtumat[0]
+    assert myynti["price"] == 90.0
+    assert myynti["amount_usd"] == pytest.approx(900.0)
+    assert myynti["pnl_usd"] == pytest.approx(-100.0)
+    assert myynti["pnl_pct"] == pytest.approx(-10.0)
+
+
+def test_tapahtumat_perustelu_saman_ajon_ja_symbolin_paatoksesta(db_polku):
+    tietokanta.init_database(db_polku)
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="osto1",
+        db_path=db_polku,
+    )
+    tietokanta.close_position(
+        symbol="AAPL", sell_price=90.0, sell_run_id="myynti1", db_path=db_polku
+    )
+    for run_id, symboli, paatos, perustelu in (
+        ("osto1", "AAPL", "osta", "pisteet riittivat"),
+        ("osto1", "MSFT", "osta", "vaara symboli"),
+        ("osto1", "AAPL", "hylatty", "vaara paatos"),
+        ("myynti1", "AAPL", "myy", "stop-loss osui"),
+    ):
+        tietokanta.insert_decision(
+            run_id=run_id,
+            run_type="normaali",
+            symbol=symboli,
+            decision=paatos,
+            rationale=perustelu,
+            db_path=db_polku,
+        )
+
+    tapahtumat = tietokanta.get_transactions(db_path=db_polku)
+
+    perustelut = {t["kind"]: t["rationale"] for t in tapahtumat}
+    assert perustelut == {"osto": "pisteet riittivat", "myynti": "stop-loss osui"}
+
+
+def test_tapahtumat_ilman_paatosta_perustelu_on_none(db_polku):
+    tietokanta.init_database(db_polku)
+    tietokanta.open_position(
+        symbol="AAPL",
+        buy_price=100.0,
+        stake_usd=1000.0,
+        buy_run_id="osto1",
+        db_path=db_polku,
+    )
+
+    tapahtumat = tietokanta.get_transactions(db_path=db_polku)
+
+    assert tapahtumat[0]["rationale"] is None
+
+
+def test_tapahtumat_jarjestyvat_ajan_mukaan_uusin_ensin(db_polku):
+    tietokanta.init_database(db_polku)
+    for symboli in ("AAA", "BBB"):
+        tietokanta.open_position(
+            symbol=symboli,
+            buy_price=100.0,
+            stake_usd=1000.0,
+            buy_run_id="osto1",
+            db_path=db_polku,
+        )
+    yhteys = tietokanta.open_connection(db_polku)
+    try:
+        yhteys.execute(
+            "UPDATE positions SET buy_date = '2026-10-01T10:00:00' WHERE symbol = 'BBB'"
+        )
+        yhteys.execute(
+            "UPDATE positions SET buy_date = '2026-11-03T15:39:25' WHERE symbol = 'AAA'"
+        )
+        yhteys.commit()
+    finally:
+        yhteys.close()
+
+    tapahtumat = tietokanta.get_transactions(db_path=db_polku)
+
+    assert [t["symbol"] for t in tapahtumat] == ["AAA", "BBB"]
 
 
 # --- skipped_symbols: insert_skip() / get_skips() (vaihe 2i) ---
